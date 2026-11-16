@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   BUNDLE_ID: com.tathow.moonlightfold
@@ -60,6 +60,14 @@ jobs:
             build | tee build.log | grep -E "error:|warning: .*deprecated|\*\* BUILD" || true
           test -d build/Build/Products/Release-iphoneos/Moonlight.app
 
+      - name: Report build errors
+        if: failure()
+        run: |
+          if [ -f build.log ]; then
+            msg=$( (grep -E "error:|\*\* BUILD" build.log || tail -n 40 build.log) | tail -n 60 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=Build errors::${msg}"
+          fi
+
       - name: Package IPA
         run: |
           mkdir -p out/Payload
@@ -69,6 +77,14 @@ jobs:
           zip -qry "../Moonlight-Fold-${SHORT_SHA}-unsigned.ipa" Payload
           cd ..
           ls -lh *.ipa
+          APP=build/Build/Products/Release-iphoneos/Moonlight.app
+          info=$(printf "IPA %s | binary %s bytes | bundle %s | min iOS %s | SDK %s | Xcode %s" \
+            "$(ls *.ipa)" "$(stat -f %z "$APP/Moonlight")" \
+            "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")" \
+            "$(/usr/libexec/PlistBuddy -c 'Print MinimumOSVersion' "$APP/Info.plist")" \
+            "$(/usr/libexec/PlistBuddy -c 'Print DTSDKName' "$APP/Info.plist")" \
+            "$(/usr/libexec/PlistBuddy -c 'Print DTXcode' "$APP/Info.plist")")
+          echo "::notice title=Build summary::$info"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
@@ -84,3 +100,16 @@ jobs:
           name: build-log
           path: build.log
           if-no-files-found: ignore
+
+      # Rolling pre-release so the latest IPA has a direct download link
+      - name: Publish pre-release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/fold'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=fold-latest
+          gh release delete "$TAG" --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          gh release create "$TAG" *.ipa \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "Moonlight Fold (latest build)" \
+            --notes "Automatic unsigned build of the fold branch at ${GITHUB_SHA::7}. Sideload the .ipa with Sideloadly."
