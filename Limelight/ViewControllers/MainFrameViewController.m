@@ -931,6 +931,69 @@ static NSMutableSet* hostList;
     [self adjustScrollViewForSafeArea:self->hostScrollView];
 }
 
+#if !TARGET_OS_TV
+// Fold fork: paint the top bar's color up to the top edge of the screen, so the
+// strip above it (where the status bar would be) isn't left black.
+- (void)foldStyleNavigationBar {
+    UINavigationBar* bar = self.navigationController.navigationBar;
+    if (bar == nil) {
+        return;
+    }
+    if (@available(iOS 13.0, *)) {
+        UIColor* color = bar.barTintColor ?: bar.backgroundColor ?: [UIColor colorWithWhite:0.667 alpha:1];
+        UINavigationBarAppearance* appearance = [[UINavigationBarAppearance alloc] init];
+        [appearance configureWithOpaqueBackground];
+        appearance.backgroundColor = color;
+        appearance.shadowColor = nil;
+        appearance.shadowImage = [[UIImage alloc] init];
+        appearance.titleTextAttributes = @{NSForegroundColorAttributeName: [UIColor whiteColor]};
+        bar.standardAppearance = appearance;
+        bar.scrollEdgeAppearance = appearance;
+        bar.compactAppearance = appearance;
+        if (@available(iOS 15.0, *)) {
+            bar.compactScrollEdgeAppearance = appearance;
+        }
+    }
+}
+
+// Fold fork: the iPhone Duo inner screen keeps a status bubble (time, Wi-Fi) in the
+// top corner even when the status bar is hidden. Move the top bar below it so the
+// bar's buttons don't sit underneath it.
+- (void)foldAvoidOcclusions {
+#if __has_include(<UIKit/UIHinge.h>)
+    if (@available(iOS 27.1, *)) {
+        UIViewController* container = self.navigationController ?: self;
+        UIView* view = container.view;
+        UIEdgeInsets extra = container.additionalSafeAreaInsets;
+        CGFloat baseTop = view.safeAreaInsets.top - extra.top;
+        CGFloat needed = 0;
+        NSArray<UIViewReservedRegion*>* regions = [view reservedRegionsOfKind:[UIViewReservedRegionKind occlusionRegionKind]];
+        for (UIViewReservedRegion* region in regions) {
+            if (!region.isActive) {
+                continue;
+            }
+            CGRect frame = region.frame;
+            // Only things hanging from the top edge, not a camera hole in the middle
+            if (CGRectGetMinY(frame) > baseTop + 8 || CGRectGetMaxY(frame) > view.bounds.size.height / 3) {
+                continue;
+            }
+            needed = MAX(needed, CGRectGetMaxY(frame) + 4 - baseTop);
+        }
+        needed = MAX(0, ceil(needed));
+        if (fabs(needed - extra.top) >= 1) {
+            extra.top = needed;
+            container.additionalSafeAreaInsets = extra;
+        }
+    }
+#endif
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self foldAvoidOcclusions];
+}
+#endif
+
 - (void)viewDidLoad
 {
     [super viewDidLoad];
@@ -1118,6 +1181,10 @@ static NSMutableSet* hostList;
     UIImage* fakeImage = [[UIImage alloc] init];
     [self.navigationController.navigationBar setShadowImage:fakeImage];
     [self.navigationController.navigationBar setBackgroundImage:fakeImage forBarPosition:UIBarPositionAny barMetrics:UIBarMetricsDefault];
+#if !TARGET_OS_TV
+    [self foldStyleNavigationBar];
+    [self foldAvoidOcclusions];
+#endif
     
     // Check for a pending shortcut action when appearing
     [self handlePendingShortcutAction];
