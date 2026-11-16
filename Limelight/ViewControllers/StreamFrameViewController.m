@@ -130,6 +130,11 @@ static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSIntege
     [super layoutSubviews];
     CGFloat pad = 10;
     CGRect area = UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets);
+    // The panel is laid out while hidden at zero size too; insetting a rect that
+    // small produces a null (infinite) rect, which crashes Core Animation.
+    if (area.size.width < 120 || area.size.height < 160) {
+        return;
+    }
     area = CGRectInset(area, pad, pad);
     CGFloat keyH = 40, btnH = 44;
     _keyRow.frame = CGRectMake(area.origin.x, area.origin.y, area.size.width, keyH);
@@ -901,7 +906,7 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
 
 - (void)setupFoldSupport {
 #if !TARGET_OS_TV
-    _foldPanel = [[FoldInputPanel alloc] initWithFrame:CGRectZero];
+    _foldPanel = [[FoldInputPanel alloc] initWithFrame:CGRectMake(0, 0, 320, 320)];
     _foldPanel.streamView = _streamView;
     _foldPanel.hidden = YES;
     __weak typeof(self) weakSelf = self;
