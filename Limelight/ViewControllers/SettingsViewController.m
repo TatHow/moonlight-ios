@@ -9,6 +9,7 @@
 #import "SettingsViewController.h"
 #import "TemporarySettings.h"
 #import "DataManager.h"
+#import "FoldDisplayMatch.h"
 
 #import <VideoToolbox/VideoToolbox.h>
 #import <AVFoundation/AVFoundation.h>
@@ -16,7 +17,12 @@
 @implementation SettingsViewController {
     NSInteger _bitrate;
     NSInteger _lastSelectedResolutionIndex;
+    UISegmentedControl* _desktopScaleSelector;
 }
+
+// The "Full" resolution segment becomes "Match": the stream (and the host's
+// virtual display) follows the size of whatever screen area shows the video.
+static const NSInteger RESOLUTION_MATCH_INDEX = 5;
 
 @dynamic overrideUserInterfaceStyle;
 
@@ -240,6 +246,12 @@ BOOL isCustomResolution(CGSize res) {
         [self.hdrSelector setSelectedSegmentIndex:currentSettings.enableHdr ? 1 : 0];
     }
     
+    if (FoldMatchDisplayEnabled()) {
+        resolution = RESOLUTION_MATCH_INDEX;
+    }
+    [self.resolutionSelector setTitle:@"Match" forSegmentAtIndex:RESOLUTION_MATCH_INDEX];
+    [self addDesktopScaleSelector];
+    
     [self.touchModeSelector setSelectedSegmentIndex:currentSettings.absoluteTouchMode ? 1 : 0];
     [self.touchModeSelector addTarget:self action:@selector(touchModeChanged) forControlEvents:UIControlEventValueChanged];
     [self.statsOverlaySelector setSelectedSegmentIndex:currentSettings.statsOverlay ? 1 : 0];
@@ -263,6 +275,53 @@ BOOL isCustomResolution(CGSize res) {
     [self.bitrateSlider addTarget:self action:@selector(bitrateSliderMoved) forControlEvents:UIControlEventValueChanged];
     [self updateBitrateText];
     [self updateResolutionDisplayViewText];
+}
+
+// Adds a "Desktop scale" row under the resolution picker and pushes the
+// rest of the (frame-based) settings layout down to make room for it.
+- (void) addDesktopScaleSelector {
+    UIView* anchor = self.resolutionDisplayView;
+    CGFloat top = CGRectGetMaxY(anchor.frame) + 8;
+    
+    UILabel* label = [[UILabel alloc] init];
+    label.text = @"Desktop Scale (Match mode)";
+    label.font = [UIFont boldSystemFontOfSize:17];
+    label.textColor = [UIColor colorWithRed:0.95 green:0.975 blue:1.0 alpha:1.0];
+    [label sizeToFit];
+    label.frame = CGRectMake(22, top, label.frame.size.width, 21);
+    
+    _desktopScaleSelector = [[UISegmentedControl alloc] initWithItems:@[@"Native", @"Comfortable", @"Large"]];
+    _desktopScaleSelector.frame = CGRectMake(16, top + 27, 300, 32);
+    _desktopScaleSelector.tintColor = self.resolutionSelector.tintColor;
+    if (@available(iOS 13.0, *)) {
+        _desktopScaleSelector.selectedSegmentTintColor = self.resolutionSelector.selectedSegmentTintColor;
+    }
+    _desktopScaleSelector.selectedSegmentIndex = FoldDesktopScaleIndex();
+    [_desktopScaleSelector addTarget:self action:@selector(desktopScaleChanged) forControlEvents:UIControlEventValueChanged];
+    
+    CGFloat shift = 27 + 32 + 12;
+    for (UIView* view in self.scrollView.subviews) {
+        if (view != anchor && view.frame.origin.y >= CGRectGetMaxY(anchor.frame)) {
+            view.frame = CGRectOffset(view.frame, 0, shift);
+        }
+    }
+    
+    [self.scrollView addSubview:label];
+    [self.scrollView addSubview:_desktopScaleSelector];
+    [self updateDesktopScaleEnabled];
+}
+
+- (void) updateDesktopScaleEnabled {
+    _desktopScaleSelector.enabled = [self.resolutionSelector selectedSegmentIndex] == RESOLUTION_MATCH_INDEX;
+}
+
+- (void) desktopScaleChanged {
+    [self updateBitrate];
+    [self updateResolutionDisplayViewText];
+}
+
+- (BOOL) isMatchSelected {
+    return [self.resolutionSelector selectedSegmentIndex] == RESOLUTION_MATCH_INDEX;
 }
 
 - (void) touchModeChanged {
@@ -342,6 +401,7 @@ BOOL isCustomResolution(CGSize res) {
         [self updateResolutionDisplayViewText];
         _lastSelectedResolutionIndex = [self.resolutionSelector selectedSegmentIndex];
     }
+    [self updateDesktopScaleEnabled];
 }
 
 - (void) promptCustomResolutionDialog {
@@ -442,7 +502,7 @@ BOOL isCustomResolution(CGSize res) {
         [subview removeFromSuperview];
     }
     UILabel *label1 = [[UILabel alloc] init];
-    label1.text = @"Set PC/Game resolution: ";
+    label1.text = [self isMatchSelected] ? @"Follows this screen, now: " : @"Set PC/Game resolution: ";
     label1.font = [UIFont systemFontOfSize:fontSize];
     [label1 sizeToFit];
     label1.frame = CGRectMake(padding, (viewFrameHeight - label1.frame.size.height) / 2, label1.frame.size.width, label1.frame.size.height);
@@ -502,7 +562,24 @@ BOOL isCustomResolution(CGSize res) {
     }
 }
 
+- (CGSize) matchedStreamSize {
+    UIView* hostView = self.view.window != nil ? (UIView*)self.view.window : self.view;
+    int maxDimension = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) ? 8192 : 4096;
+    // Apply the scale chosen on screen, not the saved one
+    double savedScale = FoldDesktopScale();
+    if (_desktopScaleSelector != nil) {
+        FoldSetDesktopScale(kFoldDesktopScales[_desktopScaleSelector.selectedSegmentIndex]);
+    }
+    CGSize size = FoldStreamSizeForView(hostView, maxDimension);
+    FoldSetDesktopScale(savedScale);
+    return size;
+}
+
 - (NSInteger) getChosenStreamHeight {
+    if ([self isMatchSelected]) {
+        return (NSInteger)[self matchedStreamSize].height;
+    }
+
     // because the 4k resolution can be removed
     BOOL lastSegmentSelected = [self.resolutionSelector selectedSegmentIndex] + 1 == [self.resolutionSelector numberOfSegments];
     if (lastSegmentSelected) {
@@ -513,6 +590,9 @@ BOOL isCustomResolution(CGSize res) {
 }
 
 - (NSInteger) getChosenStreamWidth {
+    if ([self isMatchSelected]) {
+        return (NSInteger)[self matchedStreamSize].width;
+    }
     // because the 4k resolution can be removed
     BOOL lastSegmentSelected = [self.resolutionSelector selectedSegmentIndex] + 1 == [self.resolutionSelector numberOfSegments];
     if (lastSegmentSelected) {
@@ -538,6 +618,10 @@ BOOL isCustomResolution(CGSize res) {
     BOOL absoluteTouchMode = [self.touchModeSelector selectedSegmentIndex] == 1;
     BOOL statsOverlay = [self.statsOverlaySelector selectedSegmentIndex] == 1;
     BOOL enableHdr = [self.hdrSelector selectedSegmentIndex] == 1;
+    FoldSetMatchDisplayEnabled([self isMatchSelected]);
+    if (_desktopScaleSelector != nil) {
+        FoldSetDesktopScale(kFoldDesktopScales[_desktopScaleSelector.selectedSegmentIndex]);
+    }
     [dataMan saveSettingsWithBitrate:_bitrate
                            framerate:framerate
                               height:height

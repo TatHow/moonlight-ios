@@ -46,6 +46,13 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     NSDictionary<NSString *, NSNumber *> *dictCodes;
 }
 
+- (void) streamGeometryChanged:(StreamConfiguration*)streamConfig {
+    self->streamAspectRatio = (float)streamConfig.width / (float)streamConfig.height;
+#if !TARGET_OS_TV
+    [onScreenControls relayout];
+#endif
+}
+
 - (void) setupStreamView:(ControllerSupport*)controllerSupport
      interactionDelegate:(id<UserInteractionDelegate>)interactionDelegate
                   config:(StreamConfiguration*)streamConfig {

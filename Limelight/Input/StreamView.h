@@ -30,6 +30,9 @@
 - (void) showOnScreenControls;
 - (OnScreenControlsLevel) getCurrentOscState;
 
+// Called after the view is resized or the stream is restarted at a new size
+- (void) streamGeometryChanged:(StreamConfiguration*)streamConfig;
+
 #if !TARGET_OS_TV
 - (void) updateCursorLocation:(CGPoint)location isMouse:(BOOL)isMouse;
 #endif

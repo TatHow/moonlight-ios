@@ -42,6 +42,20 @@ jobs:
             xcodebuild -downloadPlatform iOS
           fi
 
+      # Print the foldable (iPhone Duo) API surface from the SDK headers, so the
+      # fold-posture code can be written against the real names.
+      - name: Probe foldable APIs in SDK
+        continue-on-error: true
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          H="$SDK/System/Library/Frameworks/UIKit.framework/Headers"
+          files=$(grep -rlE "UIHinge|ReservedRegion|UIArrangement" "$H" | xargs -n1 basename | tr '\n' ' ')
+          echo "::notice title=Fold API headers::$files"
+          for f in $(grep -rlE "UIHinge|ReservedRegion" "$H"); do
+            body=$(grep -vE "^\s*$|^//|^\s*\*|^/\*" "$f" | grep -E "UIHinge|ReservedRegion|reservedRegion|API_AVAILABLE|typedef|@property|^- |^\+ |NS_ENUM|NS_OPTIONS|case|^\s+UI" | head -n 120 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::notice title=$(basename "$f")::$body"
+          done
+
       - name: Build (unsigned, device)
         run: |
           set -o pipefail

@@ -8,6 +8,7 @@
 @import ImageIO;
 
 #import "MainFrameViewController.h"
+#import "FoldDisplayMatch.h"
 #import "CryptoManager.h"
 #import "HttpManager.h"
 #import "Connection.h"
@@ -623,6 +624,17 @@ static NSMutableSet* hostList;
     
     _streamConfig.height = [streamSettings.height intValue];
     _streamConfig.width = [streamSettings.width intValue];
+#if !TARGET_OS_TV
+    if (FoldMatchDisplayEnabled()) {
+        // Stream at exactly the size of the screen area we're showing it in
+        int maxDimension = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) ? 8192 : 4096;
+        UIView* hostView = self.view.window != nil ? (UIView*)self.view.window : self.view;
+        CGSize matched = FoldStreamSizeForView(hostView, maxDimension);
+        _streamConfig.width = (int)matched.width;
+        _streamConfig.height = (int)matched.height;
+        Log(LOG_I, @"Match display: streaming at %dx%d", _streamConfig.width, _streamConfig.height);
+    }
+#endif
 #if TARGET_OS_TV
     // Don't allow streaming 4K on the Apple TV HD
     struct utsname systemInfo;

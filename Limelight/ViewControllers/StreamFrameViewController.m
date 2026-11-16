@@ -12,6 +12,9 @@
 #import "StreamManager.h"
 #import "ControllerSupport.h"
 #import "DataManager.h"
+#import "FoldDisplayMatch.h"
+
+#import <AVFoundation/AVFoundation.h>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -47,6 +50,13 @@
     UIScrollView *_scrollView;
     BOOL _userIsInteracting;
     CGSize _keyboardSize;
+
+    // Match display: restart the stream at the view's size when it changes
+    CGSize _lastLayoutSize;
+    NSTimer *_resizeTimer;
+    BOOL _streamActive;
+    BOOL _reconfiguring;
+    NSMutableArray<CALayer*> *_staleVideoLayers;
     
 #if !TARGET_OS_TV
     UIScreenEdgePanGestureRecognizer *_exitSwipeRecognizer;
@@ -107,7 +117,10 @@
     _controllerSupport = [[ControllerSupport alloc] initWithConfig:self.streamConfig delegate:self];
     _inactivityTimer = nil;
     
-    _streamView = [[StreamView alloc] initWithFrame:self.view.frame];
+    _streamView = [[StreamView alloc] initWithFrame:self.view.bounds];
+    _streamView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _staleVideoLayers = [[NSMutableArray alloc] init];
+    _lastLayoutSize = self.view.bounds.size;
     [_streamView setupStreamView:_controllerSupport interactionDelegate:self config:self.streamConfig];
     
 #if TARGET_OS_TV
@@ -188,7 +201,8 @@
     
     // Only enable scroll and zoom in absolute touch mode
     if (_settings.absoluteTouchMode) {
-        _scrollView = [[UIScrollView alloc] initWithFrame:self.view.frame];
+        _scrollView = [[UIScrollView alloc] initWithFrame:self.view.bounds];
+        _scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
 #if !TARGET_OS_TV
         [_scrollView.panGestureRecognizer setMinimumNumberOfTouches:2];
 #endif
@@ -218,6 +232,10 @@
 - (void)willMoveToParentViewController:(UIViewController *)parent {
     // Only cleanup when we're being destroyed
     if (parent == nil) {
+        _reconfiguring = NO;
+        _streamActive = NO;
+        [_resizeTimer invalidate];
+        _resizeTimer = nil;
         [_controllerSupport cleanup];
         [UIApplication sharedApplication].idleTimerDisabled = NO;
         [_streamMan stopStream];
@@ -370,6 +388,9 @@
 - (void) connectionStarted {
     Log(LOG_I, @"Connection started");
     dispatch_async(dispatch_get_main_queue(), ^{
+        self->_streamActive = YES;
+        self->_reconfiguring = NO;
+        
         // Leave the spinner spinning until it's obscured by
         // the first frame of video.
         self->_stageLabel.hidden = YES;
@@ -379,13 +400,16 @@
         
         [self->_controllerSupport connectionEstablished];
         
-        if (self->_settings.statsOverlay) {
+        if (self->_settings.statsOverlay && self->_statsUpdateTimer == nil) {
             self->_statsUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:1.0f
                                                                        target:self
                                                                      selector:@selector(updateStatsOverlay)
                                                                      userInfo:nil
                                                                       repeats:YES];
         }
+        
+        // The view may have changed size again while we were reconnecting
+        [self scheduleResolutionMatch];
     });
 }
 
@@ -621,8 +645,141 @@
 }
 
 - (void) videoContentShown {
+    // The new stream is on screen, so drop the frozen frame from the previous one
+    for (CALayer* layer in _staleVideoLayers) {
+        [layer removeFromSuperlayer];
+    }
+    [_staleVideoLayers removeAllObjects];
+    
     [_spinner stopAnimating];
     [self.view setBackgroundColor:[UIColor blackColor]];
+}
+
+#pragma mark - Match display (dynamic resolution)
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    
+    if (!CGSizeEqualToSize(self.view.bounds.size, _lastLayoutSize)) {
+        _lastLayoutSize = self.view.bounds.size;
+        [self viewSizeChanged];
+    }
+}
+
+- (void)viewSizeChanged {
+    Log(LOG_I, @"Stream view resized to %.0fx%.0f points", self.view.bounds.size.width, self.view.bounds.size.height);
+    
+    // Keep showing the current video, aspect-fit into the new bounds, until
+    // the stream has been restarted at the new size.
+    [_streamView streamGeometryChanged:self.streamConfig];
+    [self fitVideoLayers];
+    
+    _stageLabel.center = CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2);
+    _spinner.center = CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2 - _stageLabel.frame.size.height - _spinner.frame.size.height);
+    _tipLabel.center = CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height * 0.9);
+    
+    [self scheduleResolutionMatch];
+}
+
+- (void)fitVideoLayers {
+    float aspect = (float)self.streamConfig.width / (float)self.streamConfig.height;
+    CGRect bounds = _streamView.bounds;
+    CGSize videoSize;
+    if (bounds.size.width > bounds.size.height * aspect) {
+        videoSize = CGSizeMake(bounds.size.height * aspect, bounds.size.height);
+    } else {
+        videoSize = CGSizeMake(bounds.size.width, bounds.size.width / aspect);
+    }
+    
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    for (CALayer* layer in _streamView.layer.sublayers) {
+        if ([layer isKindOfClass:[AVSampleBufferDisplayLayer class]]) {
+            layer.position = CGPointMake(CGRectGetMidX(bounds), CGRectGetMidY(bounds));
+            layer.bounds = CGRectMake(0, 0, videoSize.width, videoSize.height);
+        }
+    }
+    [CATransaction commit];
+}
+
+- (int)maxStreamDimension {
+    return (self.streamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_H265) ? 8192 : 4096;
+}
+
+- (void)scheduleResolutionMatch {
+#if !TARGET_OS_TV
+    if (!FoldMatchDisplayEnabled() || !_streamActive || _reconfiguring) {
+        return;
+    }
+    
+    CGSize target = FoldStreamSizeForView(self.view, [self maxStreamDimension]);
+    [_resizeTimer invalidate];
+    _resizeTimer = nil;
+    
+    if ((int)target.width == self.streamConfig.width && (int)target.height == self.streamConfig.height) {
+        return;
+    }
+    
+    // Wait for the size to settle (rotation or a fold in progress) before reconnecting
+    _resizeTimer = [NSTimer scheduledTimerWithTimeInterval:0.6
+                                                    target:self
+                                                  selector:@selector(resizeTimerFired:)
+                                                  userInfo:nil
+                                                   repeats:NO];
+#endif
+}
+
+- (void)resizeTimerFired:(NSTimer*)timer {
+    _resizeTimer = nil;
+    if (!_streamActive || _reconfiguring) {
+        return;
+    }
+    
+    CGSize target = FoldStreamSizeForView(self.view, [self maxStreamDimension]);
+    int width = (int)target.width;
+    int height = (int)target.height;
+    if (width == self.streamConfig.width && height == self.streamConfig.height) {
+        return;
+    }
+    
+    Log(LOG_I, @"Match display: restarting stream at %dx%d (was %dx%d)", width, height, self.streamConfig.width, self.streamConfig.height);
+    
+    _streamActive = NO;
+    _reconfiguring = YES;
+    
+    [_statsUpdateTimer invalidate];
+    _statsUpdateTimer = nil;
+    
+    [_stageLabel setText:[NSString stringWithFormat:@"Resizing to %d x %d...", width, height]];
+    [_stageLabel sizeToFit];
+    _stageLabel.center = CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2);
+    _stageLabel.hidden = NO;
+    [self.view bringSubviewToFront:_stageLabel];
+    
+    [_streamMan stopStreamWithCompletion:^{
+        if (!self->_reconfiguring) {
+            // The user left the stream while we were stopping
+            return;
+        }
+        
+        // Keep the last frame on screen until the new stream draws
+        for (CALayer* layer in self->_streamView.layer.sublayers) {
+            if ([layer isKindOfClass:[AVSampleBufferDisplayLayer class]]) {
+                [self->_staleVideoLayers addObject:layer];
+            }
+        }
+        
+        self.streamConfig.width = width;
+        self.streamConfig.height = height;
+        [self->_streamView streamGeometryChanged:self.streamConfig];
+        
+        // StreamManager resumes the running app since the host reports it as busy
+        self->_streamMan = [[StreamManager alloc] initWithConfig:self.streamConfig
+                                                      renderView:self->_streamView
+                                             connectionCallbacks:self];
+        NSOperationQueue* opQueue = [[NSOperationQueue alloc] init];
+        [opQueue addOperation:self->_streamMan];
+    }];
 }
 
 - (void)didReceiveMemoryWarning

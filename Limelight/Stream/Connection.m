@@ -389,6 +389,20 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     });
 }
 
+-(void) terminateWithCompletion:(void (^)(void))completion
+{
+    LiInterruptConnection();
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        [initLock lock];
+        LiStopConnection();
+        [initLock unlock];
+        if (completion != nil) {
+            dispatch_async(dispatch_get_main_queue(), completion);
+        }
+    });
+}
+
 -(id) initWithConfig:(StreamConfiguration*)config renderer:(VideoDecoderRenderer*)myRenderer connectionCallbacks:(id<ConnectionCallbacks>)callbacks
 {
     self = [super init];
