@@ -669,8 +669,14 @@ const int FrontViewPositionNone = 0xff;
 
 - (UIViewController *)childViewControllerForStatusBarHidden
 {
-    UIViewController *controller = [self childViewControllerForStatusBarStyle];
-    return controller;
+    // Moonlight always hides the status bar. With the UIScene lifecycle the
+    // Info.plist UIStatusBarHidden key no longer applies, so decide it here.
+    return nil;
+}
+
+- (BOOL)prefersStatusBarHidden
+{
+    return YES;
 }
 
 
