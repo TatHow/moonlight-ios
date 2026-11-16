@@ -1,0 +1,86 @@
+name: Build unsigned IPA
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "macOS runner label (xcode-27 has the iOS 27 SDK and the iPhone Duo simulator)"
+        default: xcode-27
+        required: true
+
+concurrency:
+  group: ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BUNDLE_ID: com.tathow.moonlightfold
+
+jobs:
+  ipa:
+    name: Build IPA
+    runs-on: ${{ inputs.runner || 'xcode-27' }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Ensure iOS platform is installed
+        run: |
+          if ! xcodebuild -showsdks | grep -q iphoneos; then
+            xcodebuild -downloadPlatform iOS
+          fi
+
+      - name: Build (unsigned, device)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Moonlight.xcodeproj \
+            -scheme Moonlight \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee build.log | grep -E "error:|warning: .*deprecated|\*\* BUILD" || true
+          test -d build/Build/Products/Release-iphoneos/Moonlight.app
+
+      - name: Package IPA
+        run: |
+          mkdir -p out/Payload
+          cp -R build/Build/Products/Release-iphoneos/Moonlight.app out/Payload/
+          cd out
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          zip -qry "../Moonlight-Fold-${SHORT_SHA}-unsigned.ipa" Payload
+          cd ..
+          ls -lh *.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Moonlight-Fold-unsigned-ipa
+          path: "*.ipa"
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
