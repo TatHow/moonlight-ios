@@ -33,6 +33,9 @@
 // Called after the view is resized or the stream is restarted at a new size
 - (void) streamGeometryChanged:(StreamConfiguration*)streamConfig;
 
+// Show or hide the software keyboard (same as the three-finger tap)
+- (void) toggleKeyboard;
+
 #if !TARGET_OS_TV
 - (void) updateCursorLocation:(CGPoint)location isMouse:(BOOL)isMouse;
 #endif

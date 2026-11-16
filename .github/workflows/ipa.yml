@@ -51,7 +51,9 @@ jobs:
           H="$SDK/System/Library/Frameworks/UIKit.framework/Headers"
           files=$(grep -rlE "UIHinge|ReservedRegion|UIArrangement" "$H" | xargs -n1 basename | tr '\n' ' ')
           echo "::notice title=Fold API headers::$files"
-          for f in $(grep -rlE "UIHinge|ReservedRegion" "$H"); do
+          rr=$(grep -n -B2 -A4 -i "reservedRegion" "$H/UIView.h" | grep -v "^\s*$" | head -n 40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::notice title=UIView reservedRegions::$rr"
+          for f in $(grep -rlE "UIHinge|ReservedRegion" "$H" | grep -v "/UIView.h"); do
             body=$(grep -vE "^\s*$|^//|^\s*\*|^/\*" "$f" | grep -E "UIHinge|ReservedRegion|reservedRegion|API_AVAILABLE|typedef|@property|^- |^\+ |NS_ENUM|NS_OPTIONS|case|^\s+UI" | head -n 120 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
             echo "::notice title=$(basename "$f")::$body"
           done
