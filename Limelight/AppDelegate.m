@@ -8,6 +8,43 @@
 
 #import "AppDelegate.h"
 
+#if !TARGET_OS_TV
+// iOS 27 requires the UIScene lifecycle for apps built with its SDK (apps that
+// don't adopt it are stopped at launch), so the window is created here.
+@interface MoonlightSceneDelegate : UIResponder <UIWindowSceneDelegate>
+@property (strong, nonatomic) UIWindow *window;
+@end
+
+@implementation MoonlightSceneDelegate
+
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
+    if (![scene isKindOfClass:[UIWindowScene class]]) {
+        return;
+    }
+    
+    AppDelegate* app = (AppDelegate*)UIApplication.sharedApplication.delegate;
+    if (connectionOptions.shortcutItem != nil) {
+        app.pcUuidToLoad = (NSString*)[connectionOptions.shortcutItem.userInfo objectForKey:@"UUID"];
+    }
+    
+    NSString* storyboardName = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? @"iPad" : @"iPhone";
+    UIStoryboard* storyboard = [UIStoryboard storyboardWithName:storyboardName bundle:nil];
+    
+    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
+    self.window.rootViewController = [storyboard instantiateInitialViewController];
+    app.window = self.window;
+    [self.window makeKeyAndVisible];
+}
+
+- (void)windowScene:(UIWindowScene *)windowScene performActionForShortcutItem:(UIApplicationShortcutItem *)shortcutItem completionHandler:(void (^)(BOOL))completionHandler {
+    AppDelegate* app = (AppDelegate*)UIApplication.sharedApplication.delegate;
+    app.pcUuidToLoad = (NSString*)[shortcutItem.userInfo objectForKey:@"UUID"];
+    app.shortcutCompletionHandler = completionHandler;
+}
+
+@end
+#endif
+
 @implementation AppDelegate
 
 @synthesize managedObjectContext = _managedObjectContext;
