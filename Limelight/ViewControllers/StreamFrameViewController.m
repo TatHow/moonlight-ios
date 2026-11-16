@@ -19,6 +19,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 #include <Limelight.h>
 
 #if TARGET_OS_TV
@@ -32,6 +33,218 @@
 @property(readonly, nonatomic) float refreshRate;
 - (id)initWithRefreshRate:(float)arg1 videoDynamicRange:(int)arg2;
 @end
+
+#if !TARGET_OS_TV
+#pragma mark - Fold input panel
+
+// Shown on the half of a folded iPhone that isn't showing the stream:
+// a laptop-style trackpad with mouse buttons and a row of PC keys.
+@interface FoldInputPanel : UIView
+@property (nonatomic, weak) StreamView* streamView;
+@property (nonatomic, copy) void (^fullScreenHandler)(void);
+@end
+
+@implementation FoldInputPanel {
+    UIView* _trackpad;
+    UIStackView* _keyRow;
+    UIStackView* _buttonRow;
+    CGPoint _lastPan;
+    CGPoint _lastScroll;
+    CGPoint _lastDrag;
+    float _accumX, _accumY;
+}
+
+static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSInteger tag) {
+    UIButton* b = [UIButton buttonWithType:UIButtonTypeSystem];
+    [b setTitle:title forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    b.backgroundColor = [UIColor colorWithWhite:0.18 alpha:1.0];
+    b.layer.cornerRadius = 8;
+    b.tag = tag;
+    [b addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
+    return b;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = [UIColor colorWithWhite:0.06 alpha:1.0];
+        self.multipleTouchEnabled = YES;
+
+        // Tag = Windows virtual key code; special tags below 0
+        _keyRow = [[UIStackView alloc] initWithArrangedSubviews:@[
+            FoldMakeButton(@"⌨︎", self, @selector(keyTapped:), -1),   // keyboard
+            FoldMakeButton(@"Esc", self, @selector(keyTapped:), 0x1B),
+            FoldMakeButton(@"Tab", self, @selector(keyTapped:), 0x09),
+            FoldMakeButton(@"Win", self, @selector(keyTapped:), 0x5B),
+            FoldMakeButton(@"Alt+Tab", self, @selector(keyTapped:), -2),
+            FoldMakeButton(@"⤢", self, @selector(keyTapped:), -3),          // full screen
+        ]];
+        _keyRow.axis = UILayoutConstraintAxisHorizontal;
+        _keyRow.distribution = UIStackViewDistributionFillEqually;
+        _keyRow.spacing = 6;
+        [self addSubview:_keyRow];
+
+        _trackpad = [[UIView alloc] init];
+        _trackpad.backgroundColor = [UIColor colorWithWhite:0.13 alpha:1.0];
+        _trackpad.layer.cornerRadius = 12;
+        _trackpad.multipleTouchEnabled = YES;
+        [self addSubview:_trackpad];
+
+        UIPanGestureRecognizer* move = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(trackpadMoved:)];
+        move.maximumNumberOfTouches = 1;
+        [_trackpad addGestureRecognizer:move];
+
+        UIPanGestureRecognizer* scroll = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(trackpadScrolled:)];
+        scroll.minimumNumberOfTouches = 2;
+        scroll.maximumNumberOfTouches = 2;
+        [_trackpad addGestureRecognizer:scroll];
+
+        UITapGestureRecognizer* tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(trackpadTapped:)];
+        [_trackpad addGestureRecognizer:tap];
+
+        UITapGestureRecognizer* twoTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(trackpadTwoFingerTapped:)];
+        twoTap.numberOfTouchesRequired = 2;
+        [_trackpad addGestureRecognizer:twoTap];
+
+        // Press and hold, then drag, to click-and-drag
+        UILongPressGestureRecognizer* drag = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(trackpadDragged:)];
+        drag.minimumPressDuration = 0.35;
+        [_trackpad addGestureRecognizer:drag];
+        [move requireGestureRecognizerToFail:drag];
+
+        _buttonRow = [[UIStackView alloc] initWithArrangedSubviews:@[
+            FoldMakeButton(@"", self, @selector(mouseButtonTapped:), BUTTON_LEFT),
+            FoldMakeButton(@"", self, @selector(mouseButtonTapped:), BUTTON_RIGHT),
+        ]];
+        _buttonRow.axis = UILayoutConstraintAxisHorizontal;
+        _buttonRow.distribution = UIStackViewDistributionFillEqually;
+        _buttonRow.spacing = 2;
+        [self addSubview:_buttonRow];
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat pad = 10;
+    CGRect area = UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets);
+    area = CGRectInset(area, pad, pad);
+    CGFloat keyH = 40, btnH = 44;
+    _keyRow.frame = CGRectMake(area.origin.x, area.origin.y, area.size.width, keyH);
+    _buttonRow.frame = CGRectMake(area.origin.x, CGRectGetMaxY(area) - btnH, area.size.width, btnH);
+    CGFloat top = CGRectGetMaxY(_keyRow.frame) + 8;
+    _trackpad.frame = CGRectMake(area.origin.x, top, area.size.width, CGRectGetMinY(_buttonRow.frame) - 4 - top);
+}
+
+- (void)sendKey:(short)vk modifiers:(char)mods {
+    LiSendKeyboardEvent(0x8000 | vk, KEY_ACTION_DOWN, mods);
+    usleep(30 * 1000);
+    LiSendKeyboardEvent(0x8000 | vk, KEY_ACTION_UP, mods);
+}
+
+- (void)keyTapped:(UIButton*)sender {
+    switch (sender.tag) {
+        case -1:
+            [self.streamView toggleKeyboard];
+            break;
+        case -2: // Alt+Tab
+            LiSendKeyboardEvent(0x8000 | 0xA4, KEY_ACTION_DOWN, 0);
+            [self sendKey:0x09 modifiers:MODIFIER_ALT];
+            LiSendKeyboardEvent(0x8000 | 0xA4, KEY_ACTION_UP, 0);
+            break;
+        case -3:
+            if (self.fullScreenHandler) {
+                self.fullScreenHandler();
+            }
+            break;
+        default:
+            [self sendKey:(short)sender.tag modifiers:0];
+            break;
+    }
+}
+
+- (void)mouseButtonTapped:(UIButton*)sender {
+    LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, (int)sender.tag);
+    usleep(20 * 1000);
+    LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, (int)sender.tag);
+}
+
+// Pointer acceleration: slow movements stay precise, fast ones cover the screen
+- (void)moveByDelta:(CGPoint)delta {
+    float speed = hypotf(delta.x, delta.y);
+    float gain = 1.6f + MIN(speed / 12.0f, 2.4f);
+    _accumX += delta.x * gain;
+    _accumY += delta.y * gain;
+    short dx = (short)_accumX, dy = (short)_accumY;
+    if (dx != 0 || dy != 0) {
+        LiSendMouseMoveEvent(dx, dy);
+        _accumX -= dx;
+        _accumY -= dy;
+    }
+}
+
+- (void)trackpadMoved:(UIPanGestureRecognizer*)g {
+    CGPoint t = [g translationInView:_trackpad];
+    if (g.state == UIGestureRecognizerStateBegan) {
+        _lastPan = t;
+        return;
+    }
+    [self moveByDelta:CGPointMake(t.x - _lastPan.x, t.y - _lastPan.y)];
+    _lastPan = t;
+}
+
+- (void)trackpadScrolled:(UIPanGestureRecognizer*)g {
+    CGPoint t = [g translationInView:_trackpad];
+    if (g.state == UIGestureRecognizerStateBegan) {
+        _lastScroll = t;
+        return;
+    }
+    short dy = (short)((t.y - _lastScroll.y) * 8);
+    if (dy != 0) {
+        LiSendHighResScrollEvent(dy);
+        _lastScroll = t;
+    }
+}
+
+- (void)trackpadTapped:(UITapGestureRecognizer*)g {
+    LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT);
+    usleep(20 * 1000);
+    LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_LEFT);
+}
+
+- (void)trackpadTwoFingerTapped:(UITapGestureRecognizer*)g {
+    LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_RIGHT);
+    usleep(20 * 1000);
+    LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_RIGHT);
+}
+
+- (void)trackpadDragged:(UILongPressGestureRecognizer*)g {
+    CGPoint p = [g locationInView:_trackpad];
+    switch (g.state) {
+        case UIGestureRecognizerStateBegan:
+            _lastDrag = p;
+            LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT);
+            break;
+        case UIGestureRecognizerStateChanged:
+            [self moveByDelta:CGPointMake(p.x - _lastDrag.x, p.y - _lastDrag.y)];
+            _lastDrag = p;
+            break;
+        default:
+            LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_LEFT);
+            break;
+    }
+}
+
+@end
+#endif
+
+typedef NS_ENUM(NSInteger, FoldLayout) {
+    FoldLayoutFull,     // stream fills the screen
+    FoldLayoutLaptop,   // fold is horizontal: stream on top, input panel below
+    FoldLayoutBook,     // fold is vertical: stream on one side, input panel on the other
+};
 
 @implementation StreamFrameViewController {
     ControllerSupport *_controllerSupport;
@@ -57,6 +270,15 @@
     BOOL _streamActive;
     BOOL _reconfiguring;
     NSMutableArray<CALayer*> *_staleVideoLayers;
+
+    // Foldable postures
+    FoldLayout _foldLayout;
+    CGRect _foldDivision;          // fold band in self.view coordinates (when folded)
+    BOOL _foldFullScreenOverride;  // user asked for full screen in the current posture
+    NSInteger _hingeStatus;        // UIHingeStatus raw value, 0 when unknown / no hinge
+#if !TARGET_OS_TV
+    FoldInputPanel *_foldPanel;
+#endif
     
 #if !TARGET_OS_TV
     UIScreenEdgePanGestureRecognizer *_exitSwipeRecognizer;
@@ -223,6 +445,8 @@
     [self.view addSubview:_stageLabel];
     [self.view addSubview:_spinner];
     [self.view addSubview:_tipLabel];
+    
+    [self setupFoldSupport];
 }
 
 - (UIView *)viewForZoomingInScrollView:(UIScrollView *)scrollView {
@@ -660,10 +884,129 @@
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     
-    if (!CGSizeEqualToSize(self.view.bounds.size, _lastLayoutSize)) {
-        _lastLayoutSize = self.view.bounds.size;
+    [self applyFoldLayout];
+    
+    UIView* container = [self streamContainer];
+    if (!CGSizeEqualToSize(container.bounds.size, _lastLayoutSize)) {
+        _lastLayoutSize = container.bounds.size;
         [self viewSizeChanged];
     }
+}
+
+- (UIView*)streamContainer {
+    return _scrollView != nil ? _scrollView : _streamView;
+}
+
+#pragma mark - Foldable postures
+
+- (void)setupFoldSupport {
+#if !TARGET_OS_TV
+    _foldPanel = [[FoldInputPanel alloc] initWithFrame:CGRectZero];
+    _foldPanel.streamView = _streamView;
+    _foldPanel.hidden = YES;
+    __weak typeof(self) weakSelf = self;
+    _foldPanel.fullScreenHandler = ^{
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf) {
+            strongSelf->_foldFullScreenOverride = YES;
+            [strongSelf.view setNeedsLayout];
+        }
+    };
+    [self.view addSubview:_foldPanel];
+    
+#if __has_include(<UIKit/UIHinge.h>)
+    if (@available(iOS 27.1, *)) {
+        UIHingeInteraction* hinge = [[UIHingeInteraction alloc] initWithUpdateHandler:^(UIHingeInteraction* interaction, UIHingeInteractionUpdate* update) {
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            NSInteger status = update.hinge != nil ? (NSInteger)update.hinge.status : 0;
+            if (status != strongSelf->_hingeStatus) {
+                Log(LOG_I, @"Hinge status %ld -> %ld (angle %.2f rad)", (long)strongSelf->_hingeStatus, (long)status, update.hinge.angle);
+                strongSelf->_hingeStatus = status;
+                // A new posture clears the "full screen" override
+                strongSelf->_foldFullScreenOverride = NO;
+                [strongSelf.view setNeedsLayout];
+            }
+        }];
+        [self.view addInteraction:hinge];
+    }
+#endif
+#endif
+}
+
+// Works out the layout from the fold region UIKit reports for this view.
+- (FoldLayout)currentFoldLayout {
+#if !TARGET_OS_TV && __has_include(<UIKit/UIHinge.h>)
+    if (@available(iOS 27.1, *)) {
+        if (_foldFullScreenOverride || _hingeStatus != UIHingeStatusPartiallyOpen) {
+            return FoldLayoutFull;
+        }
+        NSArray<UIViewReservedRegion*>* regions = [self.view reservedRegionsOfKind:[UIViewReservedRegionKind divisionRegionKind]];
+        for (UIViewReservedRegion* region in regions) {
+            if (!region.isActive) {
+                continue;
+            }
+            CGRect fold = region.frame;
+            // Ignore a fold that doesn't split the view into two usable halves
+            if (CGRectGetWidth(fold) >= CGRectGetHeight(fold)) {
+                if (CGRectGetMinY(fold) < 120 || CGRectGetMaxY(fold) > self.view.bounds.size.height - 120) {
+                    continue;
+                }
+                _foldDivision = fold;
+                return FoldLayoutLaptop;
+            } else {
+                if (CGRectGetMinX(fold) < 120 || CGRectGetMaxX(fold) > self.view.bounds.size.width - 120) {
+                    continue;
+                }
+                _foldDivision = fold;
+                return FoldLayoutBook;
+            }
+        }
+    }
+#endif
+    return FoldLayoutFull;
+}
+
+- (void)applyFoldLayout {
+    FoldLayout layout = [self currentFoldLayout];
+    CGRect bounds = self.view.bounds;
+    CGRect streamFrame = bounds;
+    CGRect panelFrame = CGRectZero;
+    
+    switch (layout) {
+        case FoldLayoutLaptop:
+            streamFrame = CGRectMake(0, 0, bounds.size.width, CGRectGetMinY(_foldDivision));
+            panelFrame = CGRectMake(0, CGRectGetMaxY(_foldDivision), bounds.size.width, bounds.size.height - CGRectGetMaxY(_foldDivision));
+            break;
+        case FoldLayoutBook:
+            streamFrame = CGRectMake(0, 0, CGRectGetMinX(_foldDivision), bounds.size.height);
+            panelFrame = CGRectMake(CGRectGetMaxX(_foldDivision), 0, bounds.size.width - CGRectGetMaxX(_foldDivision), bounds.size.height);
+            break;
+        case FoldLayoutFull:
+            break;
+    }
+    
+    if (layout != _foldLayout) {
+        Log(LOG_I, @"Fold layout %ld -> %ld", (long)_foldLayout, (long)layout);
+        _foldLayout = layout;
+    }
+    
+    UIView* container = [self streamContainer];
+    if (!CGRectEqualToRect(container.frame, streamFrame)) {
+        container.frame = streamFrame;
+        if (_scrollView != nil) {
+            _streamView.frame = _scrollView.bounds;
+        }
+    }
+#if !TARGET_OS_TV
+    _foldPanel.hidden = (layout == FoldLayoutFull);
+    if (!_foldPanel.hidden) {
+        _foldPanel.frame = panelFrame;
+        [self.view bringSubviewToFront:_foldPanel];
+    }
+#endif
 }
 
 - (void)viewSizeChanged {
@@ -674,9 +1017,10 @@
     [_streamView streamGeometryChanged:self.streamConfig];
     [self fitVideoLayers];
     
-    _stageLabel.center = CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2);
-    _spinner.center = CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2 - _stageLabel.frame.size.height - _spinner.frame.size.height);
-    _tipLabel.center = CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height * 0.9);
+    CGRect area = [self streamContainer].frame;
+    _stageLabel.center = CGPointMake(CGRectGetMidX(area), CGRectGetMidY(area));
+    _spinner.center = CGPointMake(CGRectGetMidX(area), CGRectGetMidY(area) - _stageLabel.frame.size.height - _spinner.frame.size.height);
+    _tipLabel.center = CGPointMake(CGRectGetMidX(area), area.origin.y + area.size.height * 0.9);
     
     [self scheduleResolutionMatch];
 }
@@ -712,7 +1056,7 @@
         return;
     }
     
-    CGSize target = FoldStreamSizeForView(self.view, [self maxStreamDimension]);
+    CGSize target = FoldStreamSizeForView([self streamContainer], [self maxStreamDimension]);
     [_resizeTimer invalidate];
     _resizeTimer = nil;
     
@@ -735,7 +1079,7 @@
         return;
     }
     
-    CGSize target = FoldStreamSizeForView(self.view, [self maxStreamDimension]);
+    CGSize target = FoldStreamSizeForView([self streamContainer], [self maxStreamDimension]);
     int width = (int)target.width;
     int height = (int)target.height;
     if (width == self.streamConfig.width && height == self.streamConfig.height) {
@@ -752,7 +1096,7 @@
     
     [_stageLabel setText:[NSString stringWithFormat:@"Resizing to %d x %d...", width, height]];
     [_stageLabel sizeToFit];
-    _stageLabel.center = CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2);
+    _stageLabel.center = CGPointMake(CGRectGetMidX([self streamContainer].frame), CGRectGetMidY([self streamContainer].frame));
     _stageLabel.hidden = NO;
     [self.view bringSubviewToFront:_stageLabel];
     
