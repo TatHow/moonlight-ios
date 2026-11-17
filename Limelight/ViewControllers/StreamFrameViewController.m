@@ -113,7 +113,10 @@
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat pad = 8;
-    CGRect area = UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets);
+    // Run the trackpad to the bottom edge; the home indicator can share that strip
+    UIEdgeInsets insets = self.safeAreaInsets;
+    insets.bottom = 0;
+    CGRect area = UIEdgeInsetsInsetRect(self.bounds, insets);
     // The panel is laid out while hidden at zero size too; insetting a rect that
     // small produces a null (infinite) rect, which crashes Core Animation.
     if (area.size.width < 120 || area.size.height < 160) {
