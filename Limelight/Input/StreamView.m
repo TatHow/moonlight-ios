@@ -101,11 +101,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     
     onScreenControls = [[OnScreenControls alloc] initWithView:self controllerSup:controllerSupport streamConfig:streamConfig];
     OnScreenControlsLevel level = (OnScreenControlsLevel)[settings.onscreenControls integerValue];
-    if (settings.absoluteTouchMode) {
-        Log(LOG_I, @"On-screen controls disabled in absolute touch mode");
-        [onScreenControls setLevel:OnScreenControlsLevelOff];
-    }
-    else if (level == OnScreenControlsLevelAuto) {
+    // Fold build: the on-screen gamepad works in touchscreen mode too (touches
+    // on its buttons go to the gamepad, everything else goes to the PC)
+    if (level == OnScreenControlsLevelAuto) {
         [controllerSupport initAutoOnScreenControlMode:onScreenControls];
     }
     else {
@@ -658,7 +656,6 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     [touchHandler touchesCancelled:[NSSet set] withEvent:nil];
     if (touchscreen) {
         self->touchHandler = [[FoldNativeTouchHandler alloc] initWithView:self];
-        [onScreenControls setLevel:OnScreenControlsLevelOff];
     }
     else {
         self->touchHandler = [[RelativeTouchHandler alloc] initWithView:self];
