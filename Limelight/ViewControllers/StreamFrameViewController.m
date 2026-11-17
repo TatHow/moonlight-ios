@@ -342,7 +342,8 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     FoldInputPanel *_foldPanel;
     UIView *_foldRail;
     BOOL _foldPanelForced;
-    UIStackView *_foldRailButtons;
+    UIView *_foldRailButtons;
+    NSArray<UIButton*> *_foldRailButtonList;
 #endif
     
 #if !TARGET_OS_TV
@@ -1051,7 +1052,6 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     b.tintColor = [UIColor whiteColor];
     [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-    [b.heightAnchor constraintEqualToConstant:54].active = YES;
     return b;
 }
 
@@ -1060,19 +1060,20 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     _foldRail.backgroundColor = [UIColor blackColor];
     _foldRail.hidden = YES;
 
-    _foldRailButtons = [[UIStackView alloc] initWithArrangedSubviews:@[
+    _foldRailButtonList = @[
         [self railButtonWithSymbol:@"keyboard" title:@"⌨︎" action:@selector(railKeyboard)],
         [self railButtonWithSymbol:@"escape" title:@"Esc" action:@selector(railEscape)],
         [self railButtonWithSymbol:nil title:@"Win" action:@selector(railWindows)],
         [self railButtonWithSymbol:@"rectangle.split.1x2" title:@"▤" action:@selector(railTogglePanel)],
         [self railButtonWithSymbol:@"xmark" title:@"✕" action:@selector(railExit)],
-    ]];
-    _foldRailButtons.axis = UILayoutConstraintAxisVertical;
-    _foldRailButtons.distribution = UIStackViewDistributionFill;
+    ];
+    // Laid out by hand (see layoutFoldRail:) rather than with a stack view
+    _foldRailButtons = [[UIView alloc] init];
     _foldRailButtons.backgroundColor = [UIColor colorWithWhite:0.17 alpha:1];
     _foldRailButtons.layer.cornerRadius = 26;
-    _foldRailButtons.layoutMargins = UIEdgeInsetsMake(8, 0, 8, 0);
-    _foldRailButtons.layoutMarginsRelativeArrangement = YES;
+    for (UIButton* b in _foldRailButtonList) {
+        [_foldRailButtons addSubview:b];
+    }
     [_foldRail addSubview:_foldRailButtons];
     [self.view addSubview:_foldRail];
 }
@@ -1161,11 +1162,14 @@ static CGRect FoldRectOutsideRail(CGRect r, CGRect rail) {
     *panelFrame = FoldRectOutsideRail(*panelFrame, rail);
     _foldRail.frame = rail;
     CGFloat w = 56;
-    CGFloat h = 54 * _foldRailButtons.arrangedSubviews.count + 16;
+    CGFloat h = 54 * _foldRailButtonList.count + 16;
     // Below the status bubble, centered in what's left of the rail
     CGFloat top = 170;
     CGFloat y = MAX(top, (rail.size.height - h) / 2);
     _foldRailButtons.frame = CGRectMake((rail.size.width - w) / 2, MIN(y, rail.size.height - h - 20), w, h);
+    for (NSUInteger i = 0; i < _foldRailButtonList.count; i++) {
+        _foldRailButtonList[i].frame = CGRectMake(0, 8 + 54 * i, w, 54);
+    }
     [self.view bringSubviewToFront:_foldRail];
 }
 #endif
