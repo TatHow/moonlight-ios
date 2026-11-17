@@ -340,6 +340,9 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     NSInteger _hingeStatus;        // UIHingeStatus raw value, 0 when unknown / no hinge
 #if !TARGET_OS_TV
     FoldInputPanel *_foldPanel;
+    UIView *_foldRail;
+    BOOL _foldPanelForced;
+    UIStackView *_foldRailButtons;
 #endif
     
 #if !TARGET_OS_TV
@@ -975,6 +978,7 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         }
     };
     [self.view addSubview:_foldPanel];
+    [self setupFoldRail];
     
 #if __has_include(<UIKit/UIHinge.h>)
     if (@available(iOS 27.1, *)) {
@@ -1031,6 +1035,141 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     return FoldLayoutFull;
 }
 
+#if !TARGET_OS_TV
+// Fold fork: a slim control rail in the strip the system keeps for its status
+// bubble (time, Wi-Fi) on the iPhone Duo inner screen, like Yosei. The stream
+// gets the rest of the screen, at exactly that size.
+- (UIButton*)railButtonWithSymbol:(NSString*)symbol title:(NSString*)title action:(SEL)action {
+    UIButton* b = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImage* image = symbol ? [UIImage systemImageNamed:symbol withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightMedium]] : nil;
+    if (image) {
+        [b setImage:image forState:UIControlStateNormal];
+    } else {
+        [b setTitle:title forState:UIControlStateNormal];
+        b.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    }
+    b.tintColor = [UIColor whiteColor];
+    [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    [b.heightAnchor constraintEqualToConstant:54].active = YES;
+    return b;
+}
+
+- (void)setupFoldRail {
+    _foldRail = [[UIView alloc] init];
+    _foldRail.backgroundColor = [UIColor blackColor];
+    _foldRail.hidden = YES;
+
+    _foldRailButtons = [[UIStackView alloc] initWithArrangedSubviews:@[
+        [self railButtonWithSymbol:@"keyboard" title:@"⌨︎" action:@selector(railKeyboard)],
+        [self railButtonWithSymbol:@"escape" title:@"Esc" action:@selector(railEscape)],
+        [self railButtonWithSymbol:nil title:@"Win" action:@selector(railWindows)],
+        [self railButtonWithSymbol:@"rectangle.split.1x2" title:@"▤" action:@selector(railTogglePanel)],
+        [self railButtonWithSymbol:@"xmark" title:@"✕" action:@selector(railExit)],
+    ]];
+    _foldRailButtons.axis = UILayoutConstraintAxisVertical;
+    _foldRailButtons.distribution = UIStackViewDistributionFill;
+    _foldRailButtons.backgroundColor = [UIColor colorWithWhite:0.17 alpha:1];
+    _foldRailButtons.layer.cornerRadius = 26;
+    _foldRailButtons.layoutMargins = UIEdgeInsetsMake(8, 0, 8, 0);
+    _foldRailButtons.layoutMarginsRelativeArrangement = YES;
+    [_foldRail addSubview:_foldRailButtons];
+    [self.view addSubview:_foldRail];
+}
+
+- (void)railKeyboard {
+    [_streamView toggleKeyboard];
+}
+
+- (void)railTap:(short)vk {
+    dispatch_async([FoldKeyboardView keyQueue], ^{
+        LiSendKeyboardEvent(0x8000 | vk, KEY_ACTION_DOWN, 0);
+        usleep(30 * 1000);
+        LiSendKeyboardEvent(0x8000 | vk, KEY_ACTION_UP, 0);
+    });
+}
+
+- (void)railEscape {
+    [self railTap:0x1B];
+}
+
+- (void)railWindows {
+    [self railTap:0x5B];
+}
+
+// Shows the keyboard and trackpad below the stream even when the phone is flat
+- (void)railTogglePanel {
+    _foldPanelForced = !_foldPanelForced;
+    _foldFullScreenOverride = NO;
+    [self.view setNeedsLayout];
+}
+
+- (void)railExit {
+    [self edgeSwiped];
+}
+
+// The rail rectangle, or CGRectZero when the system keeps no strip at the side
+- (CGRect)foldRailRect {
+#if __has_include(<UIKit/UIHinge.h>)
+    if (@available(iOS 27.1, *)) {
+        CGRect bounds = self.view.bounds;
+        NSArray<UIViewReservedRegion*>* regions = [self.view reservedRegionsOfKind:[UIViewReservedRegionKind occlusionRegionKind]];
+        for (UIViewReservedRegion* region in regions) {
+            if (!region.isActive) {
+                continue;
+            }
+            CGRect r = region.frame;
+            // A status bubble in a top corner; ignore a camera hole in the middle
+            if (CGRectGetMinY(r) > 40 || CGRectGetWidth(r) > bounds.size.width / 4) {
+                continue;
+            }
+            CGFloat w = MAX(CGRectGetWidth(r) + 16, 76);
+            if (CGRectGetMaxX(r) >= bounds.size.width - 40) {
+                return CGRectMake(bounds.size.width - w, 0, w, bounds.size.height);
+            }
+            if (CGRectGetMinX(r) <= 40) {
+                return CGRectMake(0, 0, w, bounds.size.height);
+            }
+        }
+    }
+#endif
+    return CGRectZero;
+}
+
+static CGRect FoldRectOutsideRail(CGRect r, CGRect rail) {
+    CGRect cut = CGRectIntersection(r, rail);
+    if (CGRectIsNull(cut) || cut.size.width <= 0) {
+        return r;
+    }
+    if (CGRectGetMinX(rail) > 0) {
+        r.size.width = CGRectGetMinX(rail) - r.origin.x;
+    } else {
+        CGFloat right = CGRectGetMaxX(r);
+        r.origin.x = CGRectGetMaxX(rail);
+        r.size.width = right - r.origin.x;
+    }
+    return r;
+}
+
+- (void)layoutFoldRail:(CGRect)rail streamFrame:(CGRect*)streamFrame panelFrame:(CGRect*)panelFrame {
+    _foldRail.hidden = CGRectIsEmpty(rail);
+    if (_foldRail.hidden) {
+        return;
+    }
+    // Take the rail's strip off the side of the stream and the panel
+    *streamFrame = FoldRectOutsideRail(*streamFrame, rail);
+    *panelFrame = FoldRectOutsideRail(*panelFrame, rail);
+    _foldRail.frame = rail;
+    CGFloat w = 56;
+    CGFloat h = 54 * _foldRailButtons.arrangedSubviews.count + 16;
+    // Below the status bubble, centered in what's left of the rail
+    CGFloat top = 170;
+    CGFloat y = MAX(top, (rail.size.height - h) / 2);
+    _foldRailButtons.frame = CGRectMake((rail.size.width - w) / 2, MIN(y, rail.size.height - h - 20), w, h);
+    [self.view bringSubviewToFront:_foldRail];
+}
+#endif
+
 - (void)applyFoldLayout {
     FoldLayout layout = [self currentFoldLayout];
     CGRect bounds = self.view.bounds;
@@ -1049,6 +1188,15 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         case FoldLayoutFull:
             break;
     }
+#if !TARGET_OS_TV
+    if (layout == FoldLayoutFull && _foldPanelForced) {
+        // Panel shown on a flat screen: stream on top, keyboard and trackpad below
+        CGFloat panelH = MIN(bounds.size.height * 0.45, 460);
+        streamFrame = CGRectMake(0, 0, bounds.size.width, bounds.size.height - panelH);
+        panelFrame = CGRectMake(0, bounds.size.height - panelH, bounds.size.width, panelH);
+    }
+    [self layoutFoldRail:[self foldRailRect] streamFrame:&streamFrame panelFrame:&panelFrame];
+#endif
     
     if (layout != _foldLayout) {
         Log(LOG_I, @"Fold layout %ld -> %ld", (long)_foldLayout, (long)layout);
@@ -1063,7 +1211,7 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         }
     }
 #if !TARGET_OS_TV
-    _foldPanel.hidden = (layout == FoldLayoutFull);
+    _foldPanel.hidden = (layout == FoldLayoutFull && !_foldPanelForced);
     if (!_foldPanel.hidden) {
         _foldPanel.frame = panelFrame;
         [self.view bringSubviewToFront:_foldPanel];
