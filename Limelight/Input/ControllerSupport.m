@@ -1061,7 +1061,9 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
     // Even if no gamepads are present, we will always count one if OSC is enabled,
     // or it's set to auto and no keyboard or mouse is present. Absolute touch mode
     // disables the OSC.
-    if (level != OnScreenControlsLevelOff && (![ControllerSupport hasKeyboardOrMouse] || level != OnScreenControlsLevelAuto)) {
+    // Fold build: the on-screen gamepad is a real (virtual) GCController now and is
+    // counted like any other controller when it connects
+    if (NO && level != OnScreenControlsLevelOff && (![ControllerSupport hasKeyboardOrMouse] || level != OnScreenControlsLevelAuto)) {
         mask |= 0x1;
     }
     

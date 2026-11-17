@@ -529,6 +529,7 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         _streamActive = NO;
         [_resizeTimer invalidate];
         _resizeTimer = nil;
+        [_streamView foldSetOnScreenControls:OnScreenControlsLevelOff];
         [_controllerSupport cleanup];
         [UIApplication sharedApplication].idleTimerDisabled = NO;
         [_streamMan stopStream];

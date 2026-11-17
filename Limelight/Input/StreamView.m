@@ -7,6 +7,7 @@
 //
 
 #import "StreamView.h"
+@import GameController;
 #include <Limelight.h>
 #import "DataManager.h"
 #import "ControllerSupport.h"
@@ -55,6 +56,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     UIResponder* touchHandler;
     __weak ControllerSupport* foldControllerSupport;
     OnScreenControlsLevel foldOscLevel;
+    id foldVirtualPad;  // GCVirtualController (iOS 15+)
     
     id<UserInteractionDelegate> interactionDelegate;
     NSTimer* interactionTimer;
@@ -103,15 +105,11 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     foldControllerSupport = controllerSupport;
     foldOscLevel = (OnScreenControlsLevel)[settings.onscreenControls integerValue];
     OnScreenControlsLevel level = (OnScreenControlsLevel)[settings.onscreenControls integerValue];
-    // Fold build: the on-screen gamepad works in touchscreen mode too (touches
-    // on its buttons go to the gamepad, everything else goes to the PC)
-    if (level == OnScreenControlsLevelAuto) {
-        [controllerSupport initAutoOnScreenControlMode:onScreenControls];
-    }
-    else {
-        Log(LOG_I, @"Setting manual on-screen controls level: %d", (int)level);
-        [onScreenControls setLevel:level];
-    }
+    // Fold build: the on-screen gamepad is Apple's virtual controller (the
+    // standard iPhone layout), which shows up as a real controller
+    [onScreenControls setLevel:OnScreenControlsLevelOff];
+    foldOscLevel = OnScreenControlsLevelOff;
+    [self foldSetOnScreenControls:level];
     
     // It would be nice to just use GCMouse on iOS 14+ and the older API on iOS 13
     // but unfortunately that isn't possible today. GCMouse doesn't recognize many
@@ -659,13 +657,27 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         return;
     }
     foldOscLevel = level;
-    if (level == OnScreenControlsLevelAuto) {
-        [foldControllerSupport initAutoOnScreenControlMode:onScreenControls];
+    if (@available(iOS 15.0, *)) {
+        if (level != OnScreenControlsLevelOff && foldVirtualPad == nil) {
+            GCVirtualControllerConfiguration* config = [[GCVirtualControllerConfiguration alloc] init];
+            config.elements = [NSSet setWithArray:@[GCInputLeftThumbstick, GCInputRightThumbstick,
+                                                    GCInputButtonA, GCInputButtonB, GCInputButtonX, GCInputButtonY,
+                                                    GCInputLeftShoulder, GCInputRightShoulder,
+                                                    GCInputLeftTrigger, GCInputRightTrigger,
+                                                    GCInputButtonMenu, GCInputButtonOptions]];
+            GCVirtualController* pad = [[GCVirtualController alloc] initWithConfiguration:config];
+            foldVirtualPad = pad;
+            [pad connectWithReplyHandler:^(NSError* error) {
+                if (error != nil) {
+                    Log(LOG_W, @"On-screen gamepad failed to connect: %@", error);
+                }
+            }];
+        }
+        else if (level == OnScreenControlsLevelOff && foldVirtualPad != nil) {
+            [(GCVirtualController*)foldVirtualPad disconnect];
+            foldVirtualPad = nil;
+        }
     }
-    else {
-        [onScreenControls setLevel:level];
-    }
-    [onScreenControls show];
 }
 
 - (void) foldSetTouchscreen:(BOOL)touchscreen {
