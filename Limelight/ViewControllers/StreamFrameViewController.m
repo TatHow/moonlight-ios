@@ -804,6 +804,7 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         _settings.absoluteTouchMode = touchscreen;
         [_streamView foldSetTouchscreen:touchscreen];
     }
+    [_streamView foldSetOnScreenControls:(OnScreenControlsLevel)[fresh.onscreenControls integerValue]];
     
     int width = self.streamConfig.width, height = self.streamConfig.height;
     int dpi = self.streamConfig.foldDpi;

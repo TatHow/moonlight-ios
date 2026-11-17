@@ -41,6 +41,9 @@
 
 // Fold build: switch between touchpad and touchscreen while streaming
 - (void) foldSetTouchscreen:(BOOL)touchscreen;
+
+// Fold build: apply a new on-screen controls setting while streaming
+- (void) foldSetOnScreenControls:(OnScreenControlsLevel)level;
 #endif
 
 @end

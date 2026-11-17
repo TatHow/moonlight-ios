@@ -53,6 +53,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     double accumulatedMouseDeltaY;
     
     UIResponder* touchHandler;
+    __weak ControllerSupport* foldControllerSupport;
+    OnScreenControlsLevel foldOscLevel;
     
     id<UserInteractionDelegate> interactionDelegate;
     NSTimer* interactionTimer;
@@ -100,6 +102,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     }
     
     onScreenControls = [[OnScreenControls alloc] initWithView:self controllerSup:controllerSupport streamConfig:streamConfig];
+    foldControllerSupport = controllerSupport;
+    foldOscLevel = (OnScreenControlsLevel)[settings.onscreenControls integerValue];
     OnScreenControlsLevel level = (OnScreenControlsLevel)[settings.onscreenControls integerValue];
     // Fold build: the on-screen gamepad works in touchscreen mode too (touches
     // on its buttons go to the gamepad, everything else goes to the PC)
@@ -652,6 +656,20 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 }
 
 #if !TARGET_OS_TV
+- (void) foldSetOnScreenControls:(OnScreenControlsLevel)level {
+    if (level == foldOscLevel) {
+        return;
+    }
+    foldOscLevel = level;
+    if (level == OnScreenControlsLevelAuto) {
+        [foldControllerSupport initAutoOnScreenControlMode:onScreenControls];
+    }
+    else {
+        [onScreenControls setLevel:level];
+    }
+    [onScreenControls show];
+}
+
 - (void) foldSetTouchscreen:(BOOL)touchscreen {
     [touchHandler touchesCancelled:[NSSet set] withEvent:nil];
     if (touchscreen) {
