@@ -150,7 +150,7 @@ static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSIntege
         pad2 = CGRectMake(area.origin.x + kw + pad, area.origin.y, area.size.width - kw - pad, area.size.height);
     } else {
         // Keyboard on top (next to the fold), trackpad below it like a laptop
-        CGFloat kh = MIN(floor(area.size.height * 0.6), 5 * 54);
+        CGFloat kh = MIN(floor(area.size.height * 0.64), 320);
         keys = CGRectMake(area.origin.x, area.origin.y, area.size.width, kh);
         CGFloat tw = MIN(area.size.width, MAX(area.size.width * 0.6, 280));
         CGFloat top = CGRectGetMaxY(keys) + pad;

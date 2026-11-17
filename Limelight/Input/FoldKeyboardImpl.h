@@ -58,26 +58,30 @@ static const FoldKeyDef kFoldBarKeys[] = {
     KEND
 };
 
-// Five rows of 14.8 units each
+// Six rows of 14.8 units each; the first (function) row is drawn shorter
 static const FoldKeyDef kFoldFullKeys[] = {
     KW("Esc", 0x1B, 1.2),
-    KF("1", 0x31, "F1", 0x70), KF("2", 0x32, "F2", 0x71), KF("3", 0x33, "F3", 0x72), KF("4", 0x34, "F4", 0x73),
-    KF("5", 0x35, "F5", 0x74), KF("6", 0x36, "F6", 0x75), KF("7", 0x37, "F7", 0x76), KF("8", 0x38, "F8", 0x77),
-    KF("9", 0x39, "F9", 0x78), KF("0", 0x30, "F10", 0x79), KF("-", 0xBD, "F11", 0x7A), KF("=", 0xBB, "F12", 0x7B),
-    KRF("⌫", 0x08, "Del", 0x2E, 1.6),
+    K("F1", 0x70), K("F2", 0x71), K("F3", 0x72), K("F4", 0x73), K("F5", 0x74), K("F6", 0x75),
+    K("F7", 0x76), K("F8", 0x77), K("F9", 0x78), K("F10", 0x79), K("F11", 0x7A), K("F12", 0x7B),
+    KRF("Del", 0x2E, "Ins", 0x2D, 1.6),
+    KEND,
+    K("`", 0xC0),
+    K("1", 0x31), K("2", 0x32), K("3", 0x33), K("4", 0x34), K("5", 0x35),
+    K("6", 0x36), K("7", 0x37), K("8", 0x38), K("9", 0x39), K("0", 0x30), K("-", 0xBD), K("=", 0xBB),
+    KR("⌫", 0x08, 1.8),
     KEND,
     KW("Tab", 0x09, 1.5),
     K("Q", 0x51), K("W", 0x57), K("E", 0x45), K("R", 0x52), K("T", 0x54), K("Y", 0x59), K("U", 0x55),
     K("I", 0x49), K("O", 0x4F), K("P", 0x50), K("[", 0xDB), K("]", 0xDD), KW("\\", 0xDC, 1.3),
     KEND,
-    KW("`", 0xC0, 1.7),
+    KW("Caps", 0x14, 1.7),
     K("A", 0x41), K("S", 0x53), K("D", 0x44), K("F", 0x46), K("G", 0x47), K("H", 0x48), K("J", 0x4A),
     K("K", 0x4B), K("L", 0x4C), K(";", 0xBA), K("'", 0xDE), KW("Enter", 0x0D, 2.1),
     KEND,
     KMOD("Shift", FoldModShift, 2.3),
     K("Z", 0x5A), K("X", 0x58), K("C", 0x43), K("V", 0x56), K("B", 0x42), K("N", 0x4E), K("M", 0x4D),
     K(",", 0xBC), K(".", 0xBE), K("/", 0xBF),
-    KRF("↑", 0x26, "PgUp", 0x21, 1.2), KRF("Del", 0x2E, "Ins", 0x2D, 1.3),
+    KRF("↑", 0x26, "PgUp", 0x21, 1.2), { "PrtSc", "Ins", 0x2C, 0x2D, 1.3, FoldKeyNormal },
     KEND,
     KFN(1.2), KMOD("Ctrl", FoldModCtrl, 1.3), KMOD("Win", FoldModWin, 1.2), KMOD("Alt", FoldModAlt, 1.3),
     KR("Space", 0x20, 5.0), KACT("⤢", "fullscreen", 1.2),
@@ -255,8 +259,12 @@ static void FoldPostStateChanged(void) {
     }
 
     NSInteger rows = _rowStarts.count - 1;
-    CGFloat rowH = (area.size.height - gap * (rows - 1)) / rows;
+    // The function row is shorter, like on a laptop
+    CGFloat fnRowWeight = 0.7;
+    CGFloat unitH = (area.size.height - gap * (rows - 1)) / (rows - 1 + fnRowWeight);
+    CGFloat y = area.origin.y;
     for (NSInteger r = 0; r < rows; r++) {
+        CGFloat rowH = r == 0 ? unitH * fnRowWeight : unitH;
         NSInteger start = _rowStarts[r].integerValue, end = _rowStarts[r + 1].integerValue;
         float units = 0;
         for (NSInteger i = start; i < end; i++) {
@@ -264,16 +272,14 @@ static void FoldPostStateChanged(void) {
         }
         CGFloat unit = (area.size.width - gap * (end - start - 1)) / units;
         CGFloat x = area.origin.x;
-        CGFloat y = area.origin.y + r * (rowH + gap);
+        CGFloat fontSize = MIN(20, MAX(11, rowH * 0.38));
         for (NSInteger i = start; i < end; i++) {
             CGFloat w = unit * _buttons[i].def.width;
             _buttons[i].frame = CGRectMake(x, y, w, rowH);
+            _buttons[i].titleLabel.font = [UIFont systemFontOfSize:fontSize weight:UIFontWeightMedium];
             x += w + gap;
         }
-    }
-    CGFloat fontSize = MIN(20, MAX(12, rowH * 0.38));
-    for (FoldKeyButton* b in _buttons) {
-        b.titleLabel.font = [UIFont systemFontOfSize:fontSize weight:UIFontWeightMedium];
+        y += rowH + gap;
     }
 }
 
