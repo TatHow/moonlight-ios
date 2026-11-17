@@ -314,7 +314,10 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     BOOL _reconfiguring;
     NSMutableArray<CALayer*> *_staleVideoLayers;
 
-    // Leaving the app pauses the stream instead of ending it
+    // Leaving the app keeps the stream; if the connection drops while we're
+    // away it is picked up again on return (_backgroundPaused)
+    BOOL _inBackground;
+    CFTimeInterval _foregroundedAt;
     BOOL _backgroundPaused;
     BOOL _stopInFlight;
     BOOL _startWhenStopped;
@@ -660,6 +663,18 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         _inactivityTimer = nil;
     }
     
+    if (_inBackground) {
+        _inBackground = NO;
+        _foregroundedAt = CACurrentMediaTime();
+        if (!_backgroundPaused && (_streamActive || _reconfiguring)) {
+            // Still connected: the decoder was torn down by iOS, so ask the host for a
+            // full frame and the renderer rebuilds its layer from it
+            Log(LOG_I, @"Back in the foreground, stream still connected");
+            [self ensureFreshVideo];
+            [self scheduleResolutionMatch];
+        }
+    }
+    
     if (_backgroundPaused) {
         Log(LOG_I, @"Back in the foreground, reconnecting to the running session");
         _backgroundPaused = NO;
@@ -687,22 +702,21 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         _inactivityTimer = nil;
     }
     
-    if (_backgroundPaused) {
-        return;
-    }
-    
-    // iOS doesn't let us keep decoding video in the background, so pause the
-    // connection (the app keeps running on the PC) and pick it up again when
-    // we come back, instead of ending the session.
-    Log(LOG_I, @"Pausing stream for backgrounding");
-    _backgroundPaused = YES;
-    _streamActive = NO;
-    _reconfiguring = YES;
-    [_resizeTimer invalidate];
-    _resizeTimer = nil;
-    [_statsUpdateTimer invalidate];
-    _statsUpdateTimer = nil;
-    [self stopStreamThen:nil];
+    // Fold build: keep the connection open (audio keeps the app running in the
+    // background). Video isn't drawn while we're away; if the host drops us
+    // anyway, we reconnect when we come back.
+    Log(LOG_I, @"Entering background, keeping the stream connected");
+    _inBackground = YES;
+}
+
+- (void)ensureFreshVideo {
+    LiRequestIdrFrame();
+    // A second request shortly after covers a renderer that was still failing
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (self->_streamActive) {
+            LiRequestIdrFrame();
+        }
+    });
 }
 
 // Stops the current connection; runs `then` (or a pending restart) once it is down
@@ -877,6 +891,27 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     unsigned int portTestResults = LiTestClientConnectivity(CONN_TEST_SERVER, 443, portFlags);
     
     dispatch_async(dispatch_get_main_queue(), ^{
+        if (errorCode != ML_ERROR_GRACEFUL_TERMINATION &&
+            (self->_inBackground || CACurrentMediaTime() - self->_foregroundedAt < 8)) {
+            // Dropped because iOS suspended us: reconnect quietly instead of an error
+            Log(LOG_I, @"Connection dropped around backgrounding, will reconnect");
+            self->_streamActive = NO;
+            self->_reconfiguring = YES;
+            [self->_statsUpdateTimer invalidate];
+            self->_statsUpdateTimer = nil;
+            if (self->_inBackground) {
+                self->_backgroundPaused = YES;
+                [self stopStreamThen:nil];
+            }
+            else {
+                [self showStageText:@"Reconnecting..."];
+                [self stopStreamThen:^{
+                    [self startReplacementStream];
+                }];
+            }
+            return;
+        }
+        
         // Allow the display to go to sleep now
         [UIApplication sharedApplication].idleTimerDisabled = NO;
         
