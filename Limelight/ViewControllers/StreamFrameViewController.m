@@ -314,6 +314,11 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     BOOL _reconfiguring;
     NSMutableArray<CALayer*> *_staleVideoLayers;
 
+    // Leaving the app pauses the stream instead of ending it
+    BOOL _backgroundPaused;
+    BOOL _stopInFlight;
+    BOOL _startWhenStopped;
+
     // Foldable postures
     FoldLayout _foldLayout;
     CGRect _foldDivision;          // fold band in self.view coordinates (when folded)
@@ -363,6 +368,10 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     [UIApplication sharedApplication].idleTimerDisabled = YES;
     
     _settings = [[[DataManager alloc] init] getSettings];
+    if (self.streamConfig.foldVirtual) {
+        // Virtual mode has its own touch setting (touchscreen by default)
+        _settings.absoluteTouchMode = FoldVirtualTouchscreen();
+    }
     
     _stageLabel = [[UILabel alloc] init];
     [_stageLabel setUserInteractionEnabled:NO];
@@ -425,7 +434,7 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
 #if TARGET_OS_TV
     [_tipLabel setText:@"Tip: Tap the Play/Pause button on the Apple TV Remote to disconnect from your PC"];
 #else
-    [_tipLabel setText:@"Tip: Swipe from the left edge to disconnect from your PC"];
+    [_tipLabel setText:@"Tip: Swipe from the left edge for settings and Disconnect"];
 #endif
     
     [_tipLabel sizeToFit];
@@ -453,6 +462,16 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
                                              selector: @selector(applicationDidEnterBackground:)
                                                  name: UIApplicationDidEnterBackgroundNotification
                                                object: nil];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(foldSettingsClosed:)
+                                                 name:kFoldSettingsClosedNotification
+                                               object:nil];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(foldDisconnectRequested:)
+                                                 name:kFoldDisconnectNotification
+                                               object:nil];
 
 #if 0
     // FIXME: This doesn't work reliably on iPad for some reason. Showing and hiding the keyboard
@@ -468,8 +487,9 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
                                                object: nil];
 #endif
     
-    // Only enable scroll and zoom in absolute touch mode
-    if (_settings.absoluteTouchMode) {
+    // Fold build: touchscreen mode sends real touches to the PC (two-finger
+    // scroll and pinch included), so the local pan/zoom view is not used
+    if (NO) {
         _scrollView = [[UIScrollView alloc] initWithFrame:self.view.bounds];
         _scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
 #if !TARGET_OS_TV
@@ -595,6 +615,16 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
 }
 
 - (void) returnToMainFrame {
+#if !TARGET_OS_TV
+    // Close the settings pane if it was opened over the stream
+    SWRevealViewController* reveal = self.revealViewController;
+    if (reveal != nil && reveal.frontViewPosition != FrontViewPositionLeft) {
+        [reveal setFrontViewPosition:FrontViewPositionLeft animated:NO];
+    }
+#endif
+    _backgroundPaused = NO;
+    _startWhenStopped = NO;
+    
     // Reset display mode back to default
     [self updatePreferredDisplayMode:NO];
     
@@ -610,15 +640,8 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         [_inactivityTimer invalidate];
     }
     
-#if !TARGET_OS_TV
-    // Terminate the stream if the app is inactive for 60 seconds
-    Log(LOG_I, @"Starting inactivity termination timer");
-    _inactivityTimer = [NSTimer scheduledTimerWithTimeInterval:60
-                                                      target:self
-                                                    selector:@selector(inactiveTimerExpired:)
-                                                    userInfo:nil
-                                                     repeats:NO];
-#endif
+    // Fold build: the stream is kept (paused in the background) instead of
+    // being ended after a minute of inactivity
 }
 
 - (void)inactiveTimerExpired:(NSTimer*)timer {
@@ -636,24 +659,187 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         [_inactivityTimer invalidate];
         _inactivityTimer = nil;
     }
+    
+    if (_backgroundPaused) {
+        Log(LOG_I, @"Back in the foreground, reconnecting to the running session");
+        _backgroundPaused = NO;
+        [UIApplication sharedApplication].idleTimerDisabled = YES;
+        [self showStageText:@"Reconnecting..."];
+        if (self.streamConfig.foldVirtual) {
+            // The screen may have changed (folded, rotated) while we were away
+            CGSize target = FoldStreamSizeForView([self streamContainer], [self maxStreamDimension]);
+            self.streamConfig.width = (int)target.width;
+            self.streamConfig.height = (int)target.height;
+        }
+        if (_stopInFlight) {
+            _startWhenStopped = YES;
+        }
+        else {
+            [self startReplacementStream];
+        }
+    }
 }
 
 // This fires when the home button is pressed
 - (void)applicationDidEnterBackground:(UIApplication *)application {
-    Log(LOG_I, @"Terminating stream immediately for backgrounding");
-
     if (_inactivityTimer != nil) {
         [_inactivityTimer invalidate];
         _inactivityTimer = nil;
     }
     
+    if (_backgroundPaused) {
+        return;
+    }
+    
+    // iOS doesn't let us keep decoding video in the background, so pause the
+    // connection (the app keeps running on the PC) and pick it up again when
+    // we come back, instead of ending the session.
+    Log(LOG_I, @"Pausing stream for backgrounding");
+    _backgroundPaused = YES;
+    _streamActive = NO;
+    _reconfiguring = YES;
+    [_resizeTimer invalidate];
+    _resizeTimer = nil;
+    [_statsUpdateTimer invalidate];
+    _statsUpdateTimer = nil;
+    [self stopStreamThen:nil];
+}
+
+// Stops the current connection; runs `then` (or a pending restart) once it is down
+- (void)stopStreamThen:(void (^)(void))then {
+    _stopInFlight = YES;
+    [_streamMan stopStreamWithCompletion:^{
+        self->_stopInFlight = NO;
+        if (then != nil) {
+            then();
+        }
+        if (self->_startWhenStopped) {
+            self->_startWhenStopped = NO;
+            [self startReplacementStream];
+        }
+    }];
+}
+
+// Starts a new connection to the session that is still running on the host,
+// keeping the last frame on screen until the new stream draws
+- (void)startReplacementStream {
+    if (self.parentViewController == nil) {
+        return;
+    }
+    _reconfiguring = YES;
+    for (CALayer* layer in _streamView.layer.sublayers) {
+        if ([layer isKindOfClass:[AVSampleBufferDisplayLayer class]] && ![_staleVideoLayers containsObject:layer]) {
+            [_staleVideoLayers addObject:layer];
+        }
+    }
+    [_streamView streamGeometryChanged:self.streamConfig];
+    
+    // StreamManager resumes the running app since the host reports it as busy
+    _streamMan = [[StreamManager alloc] initWithConfig:self.streamConfig
+                                            renderView:_streamView
+                                   connectionCallbacks:self];
+    NSOperationQueue* opQueue = [[NSOperationQueue alloc] init];
+    [opQueue addOperation:_streamMan];
+}
+
+- (void)showStageText:(NSString*)text {
+    [_stageLabel setText:text];
+    [_stageLabel sizeToFit];
+    _stageLabel.center = CGPointMake(CGRectGetMidX([self streamContainer].frame), CGRectGetMidY([self streamContainer].frame));
+    _stageLabel.hidden = NO;
+    [self.view bringSubviewToFront:_stageLabel];
+}
+
+// Fold build: the left-edge swipe opens settings over the running stream
+- (void)edgeSwiped {
+#if !TARGET_OS_TV
+    if (_exitSwipeRecognizer.state != UIGestureRecognizerStateBegan) {
+        return;
+    }
+    SWRevealViewController* reveal = self.revealViewController;
+    if (reveal == nil) {
+        [self returnToMainFrame];
+        return;
+    }
+    if (reveal.frontViewPosition == FrontViewPositionLeft) {
+        Log(LOG_I, @"User swiped to open settings");
+        [self.view endEditing:YES];
+        CGFloat width = self.view.window ? self.view.window.bounds.size.width : self.view.bounds.size.width;
+        reveal.rearViewRevealWidth = MIN(510.0f, MAX(260.0f, width - 64.0f));
+        [reveal setFrontViewPosition:FrontViewPositionRight animated:YES];
+    }
+#else
+    [self returnToMainFrame];
+#endif
+}
+
+- (void)foldDisconnectRequested:(NSNotification*)note {
+    Log(LOG_I, @"User asked to disconnect from settings");
     [self returnToMainFrame];
 }
 
-- (void)edgeSwiped {
-    Log(LOG_I, @"User swiped to end stream");
+// Apply settings changed while the stream was running
+- (void)foldSettingsClosed:(NSNotification*)note {
+    if (self.parentViewController == nil) {
+        return;
+    }
+    TemporarySettings* fresh = [[[DataManager alloc] init] getSettings];
     
-    [self returnToMainFrame];
+    BOOL touchscreen = self.streamConfig.foldVirtual ? FoldVirtualTouchscreen() : fresh.absoluteTouchMode;
+    if (touchscreen != _settings.absoluteTouchMode) {
+        _settings.absoluteTouchMode = touchscreen;
+        [_streamView foldSetTouchscreen:touchscreen];
+    }
+    
+    int width = self.streamConfig.width, height = self.streamConfig.height;
+    int dpi = self.streamConfig.foldDpi;
+    if (self.streamConfig.foldVirtual) {
+        dpi = FoldVirtualDpi();
+    }
+    else {
+        CGSize size = FoldDesktopStreamSize();
+        if (size.width > [self maxStreamDimension]) {
+            size = kFoldRenderScaleSizes[1];
+        }
+        width = (int)size.width;
+        height = (int)size.height;
+    }
+    int fps = [fresh.framerate intValue];
+    if (fps > [UIScreen mainScreen].maximumFramesPerSecond) {
+        fps = (int)[UIScreen mainScreen].maximumFramesPerSecond;
+    }
+    int bitrate = [fresh.bitrate intValue];
+    
+    if (width == self.streamConfig.width && height == self.streamConfig.height && dpi == self.streamConfig.foldDpi &&
+        fps == self.streamConfig.frameRate && bitrate == self.streamConfig.bitRate) {
+        return;
+    }
+    
+    Log(LOG_I, @"Settings changed, restarting stream at %dx%d %d FPS %d kbps (%d%%)", width, height, fps, bitrate, dpi);
+    self.streamConfig.width = width;
+    self.streamConfig.height = height;
+    self.streamConfig.foldDpi = dpi;
+    self.streamConfig.frameRate = fps;
+    self.streamConfig.bitRate = bitrate;
+    
+    if (_backgroundPaused) {
+        return;
+    }
+    _streamActive = NO;
+    _reconfiguring = YES;
+    [_resizeTimer invalidate];
+    _resizeTimer = nil;
+    [_statsUpdateTimer invalidate];
+    _statsUpdateTimer = nil;
+    [self showStageText:@"Applying settings..."];
+    if (_stopInFlight) {
+        _startWhenStopped = YES;
+    }
+    else {
+        [self stopStreamThen:^{
+            [self startReplacementStream];
+        }];
+    }
 }
 
 - (void) connectionStarted {
@@ -1087,7 +1273,7 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
 }
 
 - (void)railExit {
-    [self edgeSwiped];
+    [self returnToMainFrame];
 }
 
 // The rail rectangle, or CGRectZero when the system keeps no strip at the side
@@ -1253,7 +1439,7 @@ static CGRect FoldRectOutsideRail(CGRect r, CGRect rail) {
 
 - (void)scheduleResolutionMatch {
 #if !TARGET_OS_TV
-    if (!FoldMatchDisplayEnabled() || !_streamActive || _reconfiguring) {
+    if (!self.streamConfig.foldVirtual || !_streamActive || _reconfiguring) {
         return;
     }
     
@@ -1295,35 +1481,22 @@ static CGRect FoldRectOutsideRail(CGRect r, CGRect rail) {
     [_statsUpdateTimer invalidate];
     _statsUpdateTimer = nil;
     
-    [_stageLabel setText:[NSString stringWithFormat:@"Resizing to %d x %d...", width, height]];
-    [_stageLabel sizeToFit];
-    _stageLabel.center = CGPointMake(CGRectGetMidX([self streamContainer].frame), CGRectGetMidY([self streamContainer].frame));
-    _stageLabel.hidden = NO;
-    [self.view bringSubviewToFront:_stageLabel];
+    [self showStageText:[NSString stringWithFormat:@"Resizing to %d x %d...", width, height]];
     
-    [_streamMan stopStreamWithCompletion:^{
-        if (!self->_reconfiguring) {
+    if (_stopInFlight) {
+        self.streamConfig.width = width;
+        self.streamConfig.height = height;
+        _startWhenStopped = YES;
+        return;
+    }
+    [self stopStreamThen:^{
+        if (!self->_reconfiguring || self->_backgroundPaused) {
             // The user left the stream while we were stopping
             return;
         }
-        
-        // Keep the last frame on screen until the new stream draws
-        for (CALayer* layer in self->_streamView.layer.sublayers) {
-            if ([layer isKindOfClass:[AVSampleBufferDisplayLayer class]]) {
-                [self->_staleVideoLayers addObject:layer];
-            }
-        }
-        
         self.streamConfig.width = width;
         self.streamConfig.height = height;
-        [self->_streamView streamGeometryChanged:self.streamConfig];
-        
-        // StreamManager resumes the running app since the host reports it as busy
-        self->_streamMan = [[StreamManager alloc] initWithConfig:self.streamConfig
-                                                      renderView:self->_streamView
-                                             connectionCallbacks:self];
-        NSOperationQueue* opQueue = [[NSOperationQueue alloc] init];
-        [opQueue addOperation:self->_streamMan];
+        [self startReplacementStream];
     }];
 }
 

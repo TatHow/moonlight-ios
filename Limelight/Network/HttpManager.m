@@ -269,7 +269,7 @@
     // indicated by a negative version in the last field.
     int fps = (config.frameRate > 60 && ![config.appVersion containsString:@".-"]) ? 0 : config.frameRate;
     
-    NSString* urlString = [NSString stringWithFormat:@"%@/%@?uniqueid=%@&appid=%@&mode=%dx%dx%d&additionalStates=1&sops=%d&rikey=%@&rikeyid=%d%@&localAudioPlayMode=%d&surroundAudioInfo=%d&remoteControllersBitmap=%d&gcmap=%d&gcpersist=%d%s",
+    NSString* urlString = [NSString stringWithFormat:@"%@/%@?uniqueid=%@&appid=%@&mode=%dx%dx%d&additionalStates=1&sops=%d&rikey=%@&rikeyid=%d%@&localAudioPlayMode=%d&surroundAudioInfo=%d&remoteControllersBitmap=%d&gcmap=%d&gcpersist=%d%@%s",
                            _baseHTTPSURL, verb, _uniqueId,
                            config.appID,
                            config.width, config.height, fps,
@@ -280,6 +280,9 @@
                            SURROUNDAUDIOINFO_FROM_AUDIO_CONFIGURATION(config.audioConfiguration),
                            config.gamepadMask, config.gamepadMask,
                            !config.multiController ? 1 : 0,
+                           // Fold build: the virtual display app gets a display sized to this
+                           // screen plus Windows scaling (Sunshine ignores both arguments)
+                           config.foldVirtual ? [NSString stringWithFormat:@"&virtualDisplay=1&foldDpi=%d", config.foldDpi] : @"",
                            LiGetLaunchUrlQueryParameters()];
     Log(LOG_I, @"Requesting: %@", urlString);
     // This blocks while the app is launching

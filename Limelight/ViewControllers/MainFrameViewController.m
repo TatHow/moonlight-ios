@@ -625,14 +625,28 @@ static NSMutableSet* hostList;
     _streamConfig.height = [streamSettings.height intValue];
     _streamConfig.width = [streamSettings.width intValue];
 #if !TARGET_OS_TV
-    if (FoldMatchDisplayEnabled()) {
-        // Stream at exactly the size of the screen area we're showing it in
+    {
         int maxDimension = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) ? 8192 : 4096;
-        UIView* hostView = self.view.window != nil ? (UIView*)self.view.window : self.view;
-        CGSize matched = FoldStreamSizeForView(hostView, maxDimension);
-        _streamConfig.width = (int)matched.width;
-        _streamConfig.height = (int)matched.height;
-        Log(LOG_I, @"Match display: streaming at %dx%d", _streamConfig.width, _streamConfig.height);
+        _streamConfig.foldVirtual = FoldIsVirtualApp(app.name);
+        if (_streamConfig.foldVirtual) {
+            // Virtual mode: a host display at exactly the size of this screen
+            UIView* hostView = self.view.window != nil ? (UIView*)self.view.window : self.view;
+            CGSize matched = FoldStreamSizeForView(hostView, maxDimension);
+            _streamConfig.width = (int)matched.width;
+            _streamConfig.height = (int)matched.height;
+            _streamConfig.foldDpi = FoldVirtualDpi();
+            Log(LOG_I, @"Virtual mode: streaming at %dx%d, %d%% scaling", _streamConfig.width, _streamConfig.height, _streamConfig.foldDpi);
+        }
+        else {
+            // Desktop mode: the physical display at the chosen render scale
+            CGSize size = FoldDesktopStreamSize();
+            if (size.width > 4096 && maxDimension <= 4096) {
+                size = kFoldRenderScaleSizes[1];
+            }
+            _streamConfig.width = (int)size.width;
+            _streamConfig.height = (int)size.height;
+            Log(LOG_I, @"Desktop mode: streaming at %dx%d", _streamConfig.width, _streamConfig.height);
+        }
     }
 #endif
 #if TARGET_OS_TV
@@ -887,6 +901,9 @@ static NSMutableSet* hostList;
     // If we moved back to the center position, we should save the settings
     if (position == FrontViewPositionLeft) {
         [(SettingsViewController*)[revealController rearViewController] saveSettings];
+        if (currentPosition != FrontViewPositionLeft) {
+            [[NSNotificationCenter defaultCenter] postNotificationName:kFoldSettingsClosedNotification object:nil];
+        }
     }
     
     currentPosition = position;
@@ -967,18 +984,25 @@ static NSMutableSet* hostList;
         UIEdgeInsets extra = container.additionalSafeAreaInsets;
         CGFloat baseTop = view.safeAreaInsets.top - extra.top;
         CGFloat needed = 0;
-        NSArray<UIViewReservedRegion*>* regions = [view reservedRegionsOfKind:[UIViewReservedRegionKind occlusionRegionKind]];
+        CGSize size = view.bounds.size;
+        // Only the inner screen has the corner status bubble; on the outer screen the
+        // normal safe area already clears the camera (adding more doubled the top bar)
+        BOOL innerScreen = MIN(size.width, size.height) >= 500;
+        NSArray<UIViewReservedRegion*>* regions = innerScreen ? [view reservedRegionsOfKind:[UIViewReservedRegionKind occlusionRegionKind]] : @[];
         for (UIViewReservedRegion* region in regions) {
             if (!region.isActive) {
                 continue;
             }
             CGRect frame = region.frame;
-            // Only things hanging from the top edge, not a camera hole in the middle
-            if (CGRectGetMinY(frame) > baseTop + 8 || CGRectGetMaxY(frame) > view.bounds.size.height / 3) {
+            // Only things hanging from a top corner, not a camera in the middle
+            if (CGRectGetMinY(frame) > baseTop + 8 || CGRectGetMaxY(frame) > size.height / 4 ||
+                (CGRectGetMinX(frame) > size.width / 4 && CGRectGetMaxX(frame) < size.width * 3 / 4)) {
                 continue;
             }
+            // The top bar only needs to clear it, not sit fully below it
             needed = MAX(needed, CGRectGetMaxY(frame) + 4 - baseTop);
         }
+        needed = MIN(needed, 64);
         needed = MAX(0, ceil(needed));
         if (fabs(needed - extra.top) >= 1) {
             extra.top = needed;
@@ -991,6 +1015,34 @@ static NSMutableSet* hostList;
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     [self foldAvoidOcclusions];
+    [self foldFitRevealWidth];
+
+    // After a rotation or fold the app grid kept its old scroll offset, so it
+    // could start a row down. Snap it back to the top when the size changes.
+    static CGSize lastSize;
+    CGSize size = self.view.bounds.size;
+    if (!CGSizeEqualToSize(size, lastSize)) {
+        lastSize = size;
+        UICollectionView* grid = self.collectionView;
+        if (grid != nil && !grid.isDragging && !grid.isDecelerating) {
+            UIEdgeInsets inset = grid.adjustedContentInset;
+            [grid setContentOffset:CGPointMake(-inset.left, -inset.top) animated:NO];
+        }
+    }
+}
+
+// The settings pane is 510pt wide, wider than the outer screen in portrait,
+// which pushed the app list (and any way to close settings) off screen.
+- (void)foldFitRevealWidth {
+    SWRevealViewController* reveal = self.revealViewController;
+    if (reveal == nil) {
+        return;
+    }
+    CGFloat width = self.view.window ? self.view.window.bounds.size.width : self.view.bounds.size.width;
+    CGFloat revealWidth = MIN(510.0f, MAX(260.0f, width - 64.0f));
+    if (fabs(reveal.rearViewRevealWidth - revealWidth) >= 1) {
+        reveal.rearViewRevealWidth = revealWidth;
+    }
 }
 #endif
 

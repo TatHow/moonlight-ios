@@ -38,6 +38,9 @@
 
 #if !TARGET_OS_TV
 - (void) updateCursorLocation:(CGPoint)location isMouse:(BOOL)isMouse;
+
+// Fold build: switch between touchpad and touchscreen while streaming
+- (void) foldSetTouchscreen:(BOOL)touchscreen;
 #endif
 
 @end

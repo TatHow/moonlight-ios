@@ -15,6 +15,20 @@
 #import "AbsoluteTouchHandler.h"
 #import "KeyboardInputField.h"
 #import "FoldKeyboardImpl.h"
+#import "../ViewControllers/FoldDisplayMatch.h"
+
+@interface StreamView ()
+- (CGSize) getVideoAreaSize;
+- (CGPoint) adjustCoordinatesForVideoArea:(CGPoint)point;
+@end
+
+#if !TARGET_OS_TV
+// Touchscreen mode: real Windows touch input (swipe to scroll, pinch, press
+// and hold) when the host supports it, mouse emulation otherwise.
+@interface FoldNativeTouchHandler : UIResponder
+- (id)initWithView:(StreamView*)view;
+@end
+#endif
 
 static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
@@ -61,6 +75,9 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     self->streamAspectRatio = (float)streamConfig.width / (float)streamConfig.height;
     
     TemporarySettings* settings = [[[DataManager alloc] init] getSettings];
+    if (streamConfig.foldVirtual) {
+        settings.absoluteTouchMode = FoldVirtualTouchscreen();
+    }
     
     keysDown = [[NSMutableSet alloc] init];
     keyInputField = [[KeyboardInputField alloc] initWithFrame:CGRectZero];
@@ -76,7 +93,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 #else
     // iOS uses RelativeTouchHandler or AbsoluteTouchHandler depending on user preference
     if (settings.absoluteTouchMode) {
-        self->touchHandler = [[AbsoluteTouchHandler alloc] initWithView:self];
+        self->touchHandler = [[FoldNativeTouchHandler alloc] initWithView:self];
     }
     else {
         self->touchHandler = [[RelativeTouchHandler alloc] initWithView:self];
@@ -637,6 +654,17 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 }
 
 #if !TARGET_OS_TV
+- (void) foldSetTouchscreen:(BOOL)touchscreen {
+    [touchHandler touchesCancelled:[NSSet set] withEvent:nil];
+    if (touchscreen) {
+        self->touchHandler = [[FoldNativeTouchHandler alloc] initWithView:self];
+        [onScreenControls setLevel:OnScreenControlsLevelOff];
+    }
+    else {
+        self->touchHandler = [[RelativeTouchHandler alloc] initWithView:self];
+    }
+}
+
 - (void) updateCursorLocation:(CGPoint)location isMouse:(BOOL)isMouse {
     CGPoint normalizedLocation = [self adjustCoordinatesForVideoArea:location];
     CGSize videoSize = [self getVideoAreaSize];
@@ -974,3 +1002,95 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 #endif
 
 @end
+
+#if !TARGET_OS_TV
+@implementation FoldNativeTouchHandler {
+    __weak StreamView* view;
+    AbsoluteTouchHandler* fallback;
+    BOOL usingFallback;
+}
+
+- (id)initWithView:(StreamView*)streamView {
+    self = [self init];
+    self->view = streamView;
+    self->fallback = [[AbsoluteTouchHandler alloc] initWithView:streamView];
+    return self;
+}
+
+- (BOOL)nativeSupported {
+    return (LiGetHostFeatureFlags() & LI_FF_PEN_TOUCH_EVENTS) != 0;
+}
+
+- (void)send:(uint8_t)type touches:(NSSet*)touches {
+    StreamView* v = view;
+    if (v == nil) {
+        return;
+    }
+    CGSize videoSize = [v getVideoAreaSize];
+    if (videoSize.width <= 0 || videoSize.height <= 0) {
+        return;
+    }
+    for (UITouch* touch in touches) {
+        if (touch.type == UITouchTypePencil || touch.type == UITouchTypeIndirectPointer) {
+            continue;
+        }
+        uint32_t pointerId = (uint32_t)(((uintptr_t)(__bridge void*)touch) >> 4);
+        CGPoint location = [v adjustCoordinatesForVideoArea:[touch locationInView:v]];
+        float pressure = 0.0f;
+        if (touch.maximumPossibleForce > 0 && touch.force > 0) {
+            pressure = MIN(1.0f, touch.force / touch.maximumPossibleForce);
+        }
+        float contact = touch.majorRadius > 0 ? (float)(touch.majorRadius * 2 / videoSize.width) : 0.0f;
+        LiSendTouchEvent(type, pointerId, location.x / videoSize.width, location.y / videoSize.height,
+                         pressure, contact, contact, LI_ROT_UNKNOWN);
+    }
+}
+
+- (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
+    // Decide once per gesture, so a touch never starts native and ends emulated
+    if ([[event allTouches] count] == [touches count]) {
+        usingFallback = ![self nativeSupported];
+    }
+    if (usingFallback) {
+        [fallback touchesBegan:touches withEvent:event];
+    }
+    else {
+        [self send:LI_TOUCH_EVENT_DOWN touches:touches];
+    }
+}
+
+- (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
+    if (usingFallback) {
+        [fallback touchesMoved:touches withEvent:event];
+    }
+    else {
+        [self send:LI_TOUCH_EVENT_MOVE touches:touches];
+    }
+}
+
+- (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event {
+    if (usingFallback) {
+        [fallback touchesEnded:touches withEvent:event];
+    }
+    else {
+        [self send:LI_TOUCH_EVENT_UP touches:touches];
+    }
+}
+
+- (void)touchesCancelled:(NSSet *)touches withEvent:(UIEvent *)event {
+    if (usingFallback) {
+        [fallback touchesCancelled:touches withEvent:event];
+    }
+    else if ([touches count] == 0) {
+        LiSendTouchEvent(LI_TOUCH_EVENT_CANCEL_ALL, 0, 0, 0, 0, 0, 0, LI_ROT_UNKNOWN);
+    }
+    else {
+        for (UITouch* touch in touches) {
+            uint32_t pointerId = (uint32_t)(((uintptr_t)(__bridge void*)touch) >> 4);
+            LiSendTouchEvent(LI_TOUCH_EVENT_CANCEL, pointerId, 0, 0, 0, 0, 0, LI_ROT_UNKNOWN);
+        }
+    }
+}
+
+@end
+#endif

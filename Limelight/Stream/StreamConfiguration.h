@@ -32,4 +32,9 @@
 @property BOOL useFramePacing;
 @property NSData* serverCert;
 
+// Fold build: streaming Apollo's virtual display (sized to this screen)
+@property BOOL foldVirtual;
+// Windows scaling (percent) to set on the virtual display, 0 to leave it
+@property int foldDpi;
+
 @end

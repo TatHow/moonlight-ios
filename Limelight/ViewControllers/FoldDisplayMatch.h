@@ -2,50 +2,85 @@
 //  FoldDisplayMatch.h
 //  Moonlight
 //
-//  "Match display" mode: the stream resolution follows the size of the
-//  view the video is shown in, so the host desktop becomes the phone's
-//  resolution (portrait, landscape, outer or inner screen, or one pane
-//  of a folded layout). Header-only so it needs no project file changes.
+//  Fold build stream modes. The mode follows the app that is opened:
+//  - Desktop (any normal app): streams the PC's physical display at a fixed
+//    "render scale" of 4K, touch defaults to touchpad.
+//  - Virtual (Apollo's virtual display app): the host creates a display at
+//    exactly this screen's size (it follows rotation and folding) and sets
+//    Windows scaling on it; touch defaults to touchscreen.
+//  Header-only so it needs no project file changes.
 //
 
 #import <UIKit/UIKit.h>
 
 // NSUserDefaults keys (kept out of Core Data to avoid a schema migration)
-static NSString* const kFoldMatchDisplayKey = @"FoldMatchDisplay";
-static NSString* const kFoldDesktopScaleKey = @"FoldDesktopScale";
+static NSString* const kFoldRenderScaleKey = @"FoldRenderScaleIndex";
+static NSString* const kFoldVirtualDpiKey = @"FoldVirtualDpi";
+static NSString* const kFoldVirtualTouchscreenKey = @"FoldVirtualTouchscreen";
 
-// Desktop scale presets: 1.0 = native pixels, smaller = larger UI on the host
-static const double kFoldDesktopScales[] = { 1.0, 0.75, 0.5 };
-static const int kFoldDesktopScaleCount = 3;
+// Posted by the settings screen; observed by the stream
+static NSString* const kFoldSettingsClosedNotification = @"FoldSettingsClosed";
+static NSString* const kFoldDisconnectNotification = @"FoldDisconnectRequested";
 
-static inline BOOL FoldMatchDisplayEnabled(void) {
-    return [[NSUserDefaults standardUserDefaults] boolForKey:kFoldMatchDisplayKey];
-}
+// Desktop render scale, relative to 3840x2160
+static const int kFoldRenderScaleCount = 4;
+static const int kFoldRenderScaleDefault = 1; // 2/3 = 1440p
+static NSString* const kFoldRenderScaleTitles[] = { @"1× · 4K", @"⅔ · 1440p", @"½ · 1080p", @"⅓ · 720p" };
+static const CGSize kFoldRenderScaleSizes[] = { {3840, 2160}, {2560, 1440}, {1920, 1080}, {1280, 720} };
 
-static inline void FoldSetMatchDisplayEnabled(BOOL enabled) {
-    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kFoldMatchDisplayKey];
-}
+// Windows scaling for the virtual display
+static const int kFoldVirtualDpiCount = 5;
+static const int kFoldVirtualDpis[] = { 150, 200, 225, 250, 300 };
+static const int kFoldVirtualDpiDefault = 250;
 
-static inline double FoldDesktopScale(void) {
-    double scale = [[NSUserDefaults standardUserDefaults] doubleForKey:kFoldDesktopScaleKey];
-    if (scale < 0.25 || scale > 1.0) {
-        return 1.0;
+static inline int FoldRenderScaleIndex(void) {
+    NSNumber* value = [[NSUserDefaults standardUserDefaults] objectForKey:kFoldRenderScaleKey];
+    if (value == nil) {
+        return kFoldRenderScaleDefault;
     }
-    return scale;
+    int index = [value intValue];
+    return (index < 0 || index >= kFoldRenderScaleCount) ? kFoldRenderScaleDefault : index;
 }
 
-static inline void FoldSetDesktopScale(double scale) {
-    [[NSUserDefaults standardUserDefaults] setDouble:scale forKey:kFoldDesktopScaleKey];
+static inline void FoldSetRenderScaleIndex(int index) {
+    [[NSUserDefaults standardUserDefaults] setInteger:index forKey:kFoldRenderScaleKey];
 }
 
-static inline int FoldDesktopScaleIndex(void) {
-    double scale = FoldDesktopScale();
-    for (int i = 0; i < kFoldDesktopScaleCount; i++) {
-        if (fabs(kFoldDesktopScales[i] - scale) < 0.01) {
+static inline CGSize FoldDesktopStreamSize(void) {
+    return kFoldRenderScaleSizes[FoldRenderScaleIndex()];
+}
+
+static inline int FoldVirtualDpi(void) {
+    NSInteger dpi = [[NSUserDefaults standardUserDefaults] integerForKey:kFoldVirtualDpiKey];
+    return dpi >= 100 && dpi <= 500 ? (int)dpi : kFoldVirtualDpiDefault;
+}
+
+static inline void FoldSetVirtualDpi(int dpi) {
+    [[NSUserDefaults standardUserDefaults] setInteger:dpi forKey:kFoldVirtualDpiKey];
+}
+
+static inline int FoldVirtualDpiIndex(void) {
+    int dpi = FoldVirtualDpi();
+    for (int i = 0; i < kFoldVirtualDpiCount; i++) {
+        if (kFoldVirtualDpis[i] == dpi) {
             return i;
         }
     }
-    return 0;
+    return 3;
+}
+
+static inline BOOL FoldVirtualTouchscreen(void) {
+    NSNumber* value = [[NSUserDefaults standardUserDefaults] objectForKey:kFoldVirtualTouchscreenKey];
+    return value == nil ? YES : [value boolValue];
+}
+
+static inline void FoldSetVirtualTouchscreen(BOOL enabled) {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kFoldVirtualTouchscreenKey];
+}
+
+// Apollo's built-in virtual display app ("Virtual Display" / "Virtual Desktop")
+static inline BOOL FoldIsVirtualApp(NSString* appName) {
+    return appName != nil && [appName rangeOfString:@"virtual" options:NSCaseInsensitiveSearch].location != NSNotFound;
 }
 
 // Pixel size for a stream that exactly fills a view of the given point size.
@@ -55,9 +90,8 @@ static inline CGSize FoldStreamSizeForPoints(CGSize points, CGFloat displayScale
     if (displayScale <= 0) {
         displayScale = 1;
     }
-    double factor = displayScale * FoldDesktopScale();
-    long width = (long)floor(points.width * factor);
-    long height = (long)floor(points.height * factor);
+    long width = (long)floor(points.width * displayScale);
+    long height = (long)floor(points.height * displayScale);
 
     // Keep the aspect ratio if we have to clamp down
     if (width > maxDimension || height > maxDimension) {
