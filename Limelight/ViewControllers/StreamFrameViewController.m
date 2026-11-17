@@ -88,13 +88,8 @@
         scroll.maximumNumberOfTouches = 2;
         [_trackpad addGestureRecognizer:scroll];
 
-        // Single tap = left click, double tap = right click
-        UITapGestureRecognizer* doubleTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(trackpadTwoFingerTapped:)];
-        doubleTap.numberOfTapsRequired = 2;
-        [_trackpad addGestureRecognizer:doubleTap];
-
+        // Tap = left click (tap twice to double-click), two-finger tap = right click
         UITapGestureRecognizer* tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(trackpadTapped:)];
-        [tap requireGestureRecognizerToFail:doubleTap];
         [_trackpad addGestureRecognizer:tap];
 
         UITapGestureRecognizer* twoTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(trackpadTwoFingerTapped:)];
