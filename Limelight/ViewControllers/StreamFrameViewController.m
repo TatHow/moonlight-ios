@@ -371,10 +371,9 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     [UIApplication sharedApplication].idleTimerDisabled = YES;
     
     _settings = [[[DataManager alloc] init] getSettings];
-    if (self.streamConfig.foldVirtual) {
-        // Virtual mode has its own touch setting (touchscreen by default)
-        _settings.absoluteTouchMode = FoldVirtualTouchscreen();
-    }
+    // Each connection starts on touchpad for Desktop, touchscreen for Virtual
+    FoldSetSessionTouchscreen(self.streamConfig.foldVirtual);
+    _settings.absoluteTouchMode = self.streamConfig.foldVirtual;
     
     _stageLabel = [[UILabel alloc] init];
     [_stageLabel setUserInteractionEnabled:NO];
@@ -781,10 +780,35 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         CGFloat width = self.view.window ? self.view.window.bounds.size.width : self.view.bounds.size.width;
         reveal.rearViewRevealWidth = MIN(510.0f, MAX(260.0f, width - 64.0f));
         [reveal setFrontViewPosition:FrontViewPositionRight animated:YES];
+        [self foldAddSettingsShield];
     }
 #else
     [self returnToMainFrame];
 #endif
+}
+
+// While settings are open, the visible strip of the stream closes them on tap
+// (and doesn't send touches to the PC)
+- (void)foldAddSettingsShield {
+    [self foldRemoveSettingsShield];
+    UIView* shield = [[UIView alloc] initWithFrame:self.view.bounds];
+    shield.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    shield.backgroundColor = [UIColor colorWithWhite:0 alpha:0.25];
+    shield.tag = 0xF01D;
+    [shield addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(foldCloseSettings)]];
+    [self.view addSubview:shield];
+}
+
+- (void)foldRemoveSettingsShield {
+    [[self.view viewWithTag:0xF01D] removeFromSuperview];
+}
+
+- (void)foldCloseSettings {
+    SWRevealViewController* reveal = self.revealViewController;
+    if (reveal != nil && reveal.frontViewPosition != FrontViewPositionLeft) {
+        [reveal setFrontViewPosition:FrontViewPositionLeft animated:YES];
+    }
+    [self foldRemoveSettingsShield];
 }
 
 - (void)foldDisconnectRequested:(NSNotification*)note {
@@ -799,7 +823,8 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     }
     TemporarySettings* fresh = [[[DataManager alloc] init] getSettings];
     
-    BOOL touchscreen = self.streamConfig.foldVirtual ? FoldVirtualTouchscreen() : fresh.absoluteTouchMode;
+    [self foldRemoveSettingsShield];
+    BOOL touchscreen = FoldSessionTouchscreen();
     if (touchscreen != _settings.absoluteTouchMode) {
         _settings.absoluteTouchMode = touchscreen;
         [_streamView foldSetTouchscreen:touchscreen];

@@ -78,6 +78,18 @@ static inline void FoldSetVirtualTouchscreen(BOOL enabled) {
     [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kFoldVirtualTouchscreenKey];
 }
 
+// Touch mode of the running session: each connection starts on touchpad for
+// Desktop and touchscreen for Virtual, and the settings toggle changes it
+static NSString* const kFoldSessionTouchscreenKey = @"FoldSessionTouchscreen";
+
+static inline BOOL FoldSessionTouchscreen(void) {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kFoldSessionTouchscreenKey];
+}
+
+static inline void FoldSetSessionTouchscreen(BOOL enabled) {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kFoldSessionTouchscreenKey];
+}
+
 // Apollo's built-in virtual display app ("Virtual Display" / "Virtual Desktop")
 static inline BOOL FoldIsVirtualApp(NSString* appName) {
     return appName != nil && [appName rangeOfString:@"virtual" options:NSCaseInsensitiveSearch].location != NSNotFound;

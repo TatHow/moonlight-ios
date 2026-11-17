@@ -12,6 +12,7 @@
 #import "FoldDisplayMatch.h"
 #import "SWRevealViewController.h"
 #import "StreamConfiguration.h"
+#import "OnScreenControls.h"
 
 #import <VideoToolbox/VideoToolbox.h>
 #import <AVFoundation/AVFoundation.h>
@@ -20,7 +21,9 @@
     NSInteger _bitrate;
     NSInteger _lastSelectedResolutionIndex;
     UISegmentedControl* _desktopScaleSelector;   // Virtual display scaling
-    UISegmentedControl* _virtualTouchSelector;
+    UIButton* _advancedButton;
+    BOOL _showAdvanced;
+    NSMapTable<UIView*, UILabel*>* _rowLabels;  // control -> its title label
     UIButton* _doneButton;
     UIButton* _disconnectButton;
     CGFloat _laidOutWidth;
@@ -77,35 +80,10 @@ CGSize resolutionTable[RESOLUTION_TABLE_SIZE];
     return i - 1;
 }
 
-// This view is rooted at a ScrollView. To make it scrollable,
-// we'll update content size here.
 -(void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
     [self updateDisconnectButton];
     [self foldLayoutToWidth];
-    CGFloat highestViewY = 0;
-    
-    // Enumerate the scroll view's subviews looking for the
-    // highest view Y value to set our scroll view's content
-    // size.
-    for (UIView* view in self.scrollView.subviews) {
-        // UIScrollViews have 2 default child views
-        // which represent the horizontal and vertical scrolling
-        // indicators. Ignore any views we don't recognize.
-        if (![view isKindOfClass:[UILabel class]] &&
-            ![view isKindOfClass:[UISegmentedControl class]] &&
-            ![view isKindOfClass:[UISlider class]]) {
-            continue;
-        }
-        
-        CGFloat currentViewY = view.frame.origin.y + view.frame.size.height;
-        if (currentViewY > highestViewY) {
-            highestViewY = currentViewY;
-        }
-    }
-    
-    // Add a bit of padding so the view doesn't end right at the button of the display
-    self.scrollView.contentSize = CGSizeMake(self.scrollView.bounds.size.width,
-                                             highestViewY + 20);
 }
 
 // Fold build: the controls are laid out to the pane's width in
@@ -251,14 +229,10 @@ BOOL isCustomResolution(CGSize res) {
         [self.resolutionSelector setEnabled:NO forSegmentAtIndex:0];
     }
     resolution = FoldRenderScaleIndex();
-    [self renameLabelWithPrefix:@"Resolution" to:@"Desktop Render Scale"];
     [self.resolutionDisplayView removeGestureRecognizer:resolutionDisplayViewTap];
-    [self addDesktopScaleSelector];
-    [self addVirtualTouchSelector];
-    [self addTopBar];
+    [self foldBuildRows];
     
-    [self.touchModeSelector setSelectedSegmentIndex:currentSettings.absoluteTouchMode ? 1 : 0];
-    [self renameLabelWithPrefix:@"Touch Mode" to:@"Touch Mode (Desktop)"];
+    [self.touchModeSelector setSelectedSegmentIndex:FoldSessionTouchscreen() ? 1 : 0];
     [self.touchModeSelector addTarget:self action:@selector(touchModeChanged) forControlEvents:UIControlEventValueChanged];
     [self.statsOverlaySelector setSelectedSegmentIndex:currentSettings.statsOverlay ? 1 : 0];
     [self.btMouseSelector setSelectedSegmentIndex:currentSettings.btMouseSupport ? 1 : 0];
@@ -273,31 +247,19 @@ BOOL isCustomResolution(CGSize res) {
     [self.resolutionSelector addTarget:self action:@selector(newResolutionChosen) forControlEvents:UIControlEventValueChanged];
     [self.framerateSelector setSelectedSegmentIndex:framerate];
     [self.framerateSelector addTarget:self action:@selector(updateBitrate) forControlEvents:UIControlEventValueChanged];
-    [self.onscreenControlSelector setSelectedSegmentIndex:onscreenControls];
+    // The on-screen gamepad is just on (full layout) or off
+    [self.onscreenControlSelector removeAllSegments];
+    [self.onscreenControlSelector insertSegmentWithTitle:@"Off" atIndex:0 animated:NO];
+    [self.onscreenControlSelector insertSegmentWithTitle:@"On" atIndex:1 animated:NO];
+    [self.onscreenControlSelector setSelectedSegmentIndex:onscreenControls == OnScreenControlsLevelOff ? 0 : 1];
     [self.onscreenControlSelector setEnabled:YES];
+    [self updateDisconnectButton];
     [self.bitrateSlider setMinimumValue:0];
     [self.bitrateSlider setMaximumValue:(sizeof(bitrateTable) / sizeof(*bitrateTable)) - 1];
     [self.bitrateSlider setValue:[self getSliderValueForBitrate:_bitrate] animated:YES];
     [self.bitrateSlider addTarget:self action:@selector(bitrateSliderMoved) forControlEvents:UIControlEventValueChanged];
     [self updateBitrateText];
     [self updateResolutionDisplayViewText];
-}
-
-- (UILabel*) labelWithPrefix:(NSString*)prefix {
-    for (UIView* view in self.scrollView.subviews) {
-        if ([view isKindOfClass:[UILabel class]] && [((UILabel*)view).text hasPrefix:prefix]) {
-            return (UILabel*)view;
-        }
-    }
-    return nil;
-}
-
-- (void) renameLabelWithPrefix:(NSString*)prefix to:(NSString*)title {
-    UILabel* label = [self labelWithPrefix:prefix];
-    label.text = title;
-    CGRect frame = label.frame;
-    frame.size.width = MAX(frame.size.width, [label sizeThatFits:CGSizeMake(CGFLOAT_MAX, frame.size.height)].width);
-    label.frame = frame;
 }
 
 - (UISegmentedControl*) newSelectorWithItems:(NSArray<NSString*>*)items {
@@ -309,84 +271,155 @@ BOOL isCustomResolution(CGSize res) {
     return selector;
 }
 
-// Adds a titled row under `anchor` and pushes the rest of the (frame-based)
-// settings layout down to make room for it.
-- (void) insertRowBelow:(UIView*)anchor title:(NSString*)title control:(UIView*)control {
-    CGFloat top = CGRectGetMaxY(anchor.frame) + 8;
-    
+- (UILabel*) newRowLabel:(NSString*)title {
     UILabel* label = [[UILabel alloc] init];
     label.text = title;
-    label.font = [UIFont boldSystemFontOfSize:17];
     label.textColor = [UIColor colorWithRed:0.95 green:0.975 blue:1.0 alpha:1.0];
-    [label sizeToFit];
-    label.frame = CGRectMake(anchor.frame.origin.x + 6, top, label.frame.size.width, 21);
-    control.frame = CGRectMake(anchor.frame.origin.x, top + 27, anchor.frame.size.width > 100 ? MIN(anchor.frame.size.width, 360) : 300, 32);
-    
-    CGFloat shift = 27 + 32 + 12;
-    CGFloat anchorBottom = CGRectGetMaxY(anchor.frame);
-    for (UIView* view in self.scrollView.subviews) {
-        if (view != anchor && view.frame.origin.y >= anchorBottom) {
-            view.frame = CGRectOffset(view.frame, 0, shift);
-        }
-    }
-    
     [self.scrollView addSubview:label];
-    [self.scrollView addSubview:control];
+    return label;
 }
 
-- (void) addDesktopScaleSelector {
+// Fold build: a compact layout. The main rows are the ones used while
+// streaming; everything else sits under "Advanced".
+- (void) foldBuildRows {
+    // Pair each storyboard control with the title label right above it,
+    // before anything moves
+    _rowLabels = [NSMapTable weakToWeakObjectsMapTable];
+    NSArray<UIView*>* controls = @[self.resolutionSelector, self.framerateSelector, self.touchModeSelector,
+                                   self.onscreenControlSelector, self.optimizeSettingsSelector, self.multiControllerSelector,
+                                   self.swapABXYButtonsSelector, self.audioOnPCSelector, self.codecSelector, self.hdrSelector,
+                                   self.framePacingSelector, self.btMouseSelector, self.statsOverlaySelector];
+    for (UIView* control in controls) {
+        UILabel* best = nil;
+        for (UIView* view in self.scrollView.subviews) {
+            if (![view isKindOfClass:[UILabel class]] || view == self.bitrateLabel) {
+                continue;
+            }
+            if (CGRectGetMaxY(view.frame) <= control.frame.origin.y + 4 &&
+                (best == nil || view.frame.origin.y > best.frame.origin.y)) {
+                best = (UILabel*)view;
+            }
+        }
+        if (best != nil) {
+            [_rowLabels setObject:best forKey:control];
+        }
+    }
+    [_rowLabels objectForKey:self.resolutionSelector].text = @"Render Scale (Desktop)";
+    [_rowLabels objectForKey:self.touchModeSelector].text = @"Touch Mode";
+    [_rowLabels objectForKey:self.onscreenControlSelector].text = @"On-Screen Gamepad";
+    
     NSMutableArray* items = [[NSMutableArray alloc] init];
     for (int i = 0; i < kFoldVirtualDpiCount; i++) {
         [items addObject:[NSString stringWithFormat:@"%d%%", kFoldVirtualDpis[i]]];
     }
     _desktopScaleSelector = [self newSelectorWithItems:items];
     _desktopScaleSelector.selectedSegmentIndex = FoldVirtualDpiIndex();
-    [self insertRowBelow:self.resolutionDisplayView title:@"Virtual Display Scaling" control:_desktopScaleSelector];
+    [self.scrollView addSubview:_desktopScaleSelector];
+    [_rowLabels setObject:[self newRowLabel:@"Windows Scaling (Virtual)"] forKey:_desktopScaleSelector];
+    
+    UIColor* accent = [UIColor colorWithRed:0.62 green:0.58 blue:0.96 alpha:1.0];
+    if (@available(iOS 13.0, *)) {
+        if (self.touchModeSelector.selectedSegmentTintColor != nil) {
+            accent = self.touchModeSelector.selectedSegmentTintColor;
+        }
+    }
+    _doneButton = [self pillButton:@"Done" color:accent];
+    [_doneButton addTarget:self action:@selector(doneTapped) forControlEvents:UIControlEventTouchUpInside];
+    _disconnectButton = [self pillButton:@"Disconnect" color:[UIColor colorWithRed:0.86 green:0.24 blue:0.24 alpha:1.0]];
+    [_disconnectButton addTarget:self action:@selector(disconnectTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.scrollView addSubview:_doneButton];
+    [self.scrollView addSubview:_disconnectButton];
+    
+    _advancedButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _advancedButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    _advancedButton.titleLabel.font = [UIFont boldSystemFontOfSize:15];
+    [_advancedButton setTitleColor:accent forState:UIControlStateNormal];
+    [_advancedButton addTarget:self action:@selector(advancedTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.scrollView addSubview:_advancedButton];
 }
 
-- (void) addVirtualTouchSelector {
-    _virtualTouchSelector = [self newSelectorWithItems:@[@"Touchpad", @"Touchscreen"]];
-    _virtualTouchSelector.selectedSegmentIndex = FoldVirtualTouchscreen() ? 1 : 0;
-    [self insertRowBelow:self.touchModeSelector title:@"Touch Mode (Virtual)" control:_virtualTouchSelector];
+- (void) advancedTapped {
+    _showAdvanced = !_showAdvanced;
+    _laidOutWidth = 0;
+    [self foldLayoutToWidth];
 }
 
-// Lay every row out across the visible width of the pane with a small margin
+// Lay the rows out top to bottom across the visible width of the pane
 - (void) foldLayoutToWidth {
+    if (_doneButton == nil) {
+        return;
+    }
     CGFloat paneWidth = self.view.bounds.size.width;
     SWRevealViewController* reveal = self.revealViewController;
     if (reveal != nil && reveal.rearViewRevealWidth > 0) {
         paneWidth = MIN(paneWidth, reveal.rearViewRevealWidth);
     }
-    CGFloat left = MAX(self.view.safeAreaInsets.left, 0) + 16;
-    CGFloat width = MAX(paneWidth - left - 16, 200);
+    CGFloat left = MAX(self.view.safeAreaInsets.left, 0) + 14;
+    CGFloat width = MAX(paneWidth - left - 14, 200);
     if (fabs(width - _laidOutWidth) < 1 && fabs(left - _laidOutLeft) < 1) {
         return;
     }
     _laidOutWidth = width;
     _laidOutLeft = left;
     
-    for (UIView* view in self.scrollView.subviews) {
-        CGRect frame = view.frame;
-        if (view == _doneButton) {
-            frame.origin.x = left;
+    NSArray<UIView*>* mainRows = @[self.resolutionSelector, self.resolutionDisplayView, _desktopScaleSelector,
+                                   self.touchModeSelector, self.onscreenControlSelector, self.framerateSelector, self.bitrateSlider];
+    NSArray<UIView*>* advancedRows = @[self.codecSelector, self.hdrSelector, self.optimizeSettingsSelector, self.audioOnPCSelector,
+                                       self.multiControllerSelector, self.swapABXYButtonsSelector, self.framePacingSelector,
+                                       self.btMouseSelector, self.statsOverlaySelector];
+    
+    // Anything not placed (advanced rows while collapsed) is hidden
+    NSMutableSet* placed = [[NSMutableSet alloc] init];
+    
+    __block CGFloat y = 12;
+    _doneButton.frame = CGRectMake(left, y, 92, 36);
+    _disconnectButton.frame = CGRectMake(left + 92 + 10, y, 124, 36);
+    _doneButton.layer.cornerRadius = 18;
+    _disconnectButton.layer.cornerRadius = 18;
+    y += 36 + 14;
+    
+    void (^place)(UIView*) = ^(UIView* control) {
+        UILabel* label = (control == self.bitrateSlider) ? self.bitrateLabel : [self->_rowLabels objectForKey:control];
+        if (control == self.resolutionDisplayView) {
+            label = nil;
+            y -= 6;
         }
-        else if (view == _disconnectButton) {
-            frame.origin.x = left + _doneButton.frame.size.width + 12;
+        if (label != nil) {
+            label.font = [UIFont boldSystemFontOfSize:15];
+            label.hidden = NO;
+            label.frame = CGRectMake(left + 2, y, width - 2, 20);
+            [placed addObject:label];
+            y += 20 + 4;
         }
-        else if ([view isKindOfClass:[UILabel class]]) {
-            frame.origin.x = left + 4;
-            frame.size.width = width - 4;
-        }
-        else if ([view isKindOfClass:[UISegmentedControl class]] || [view isKindOfClass:[UISlider class]] ||
-                 view == self.resolutionDisplayView) {
-            frame.origin.x = left;
-            frame.size.width = width;
-        }
-        else {
-            continue;
-        }
-        view.frame = frame;
+        CGFloat height = (control == self.resolutionDisplayView) ? 26 : 30;
+        control.hidden = NO;
+        control.frame = CGRectMake(left, y, width, height);
+        [placed addObject:control];
+        y += height + 12;
+    };
+    
+    for (UIView* control in mainRows) {
+        place(control);
     }
+    
+    [_advancedButton setTitle:_showAdvanced ? @"Advanced  ▾" : @"Advanced  ▸" forState:UIControlStateNormal];
+    _advancedButton.frame = CGRectMake(left + 2, y, width - 2, 30);
+    y += 30 + 10;
+    
+    if (_showAdvanced) {
+        for (UIView* control in advancedRows) {
+            place(control);
+        }
+    }
+    
+    for (UIView* view in self.scrollView.subviews) {
+        if (([view isKindOfClass:[UILabel class]] || [view isKindOfClass:[UISegmentedControl class]] || [view isKindOfClass:[UISlider class]]) &&
+            ![placed containsObject:view]) {
+            view.hidden = YES;
+        }
+    }
+    
+    self.scrollView.contentSize = CGSizeMake(self.scrollView.bounds.size.width, y + 20);
     [self updateResolutionDisplayViewText];
 }
 
@@ -402,47 +435,6 @@ BOOL isCustomResolution(CGSize res) {
     StreamConfiguration* config = [front valueForKey:@"streamConfig"];
     *isVirtual = config.foldVirtual;
     return YES;
-}
-
-// Done (close settings) and Disconnect (end the stream) above everything else
-- (void) addTopBar {
-    CGFloat minY = CGFLOAT_MAX;
-    CGFloat minX = 16;
-    for (UIView* view in self.scrollView.subviews) {
-        if ([view isKindOfClass:[UILabel class]] || [view isKindOfClass:[UISegmentedControl class]]) {
-            if (view.frame.origin.y < minY) {
-                minY = view.frame.origin.y;
-                minX = view.frame.origin.x;
-            }
-        }
-    }
-    if (minY == CGFLOAT_MAX) {
-        minY = 20;
-    }
-    CGFloat shift = 56;
-    for (UIView* view in self.scrollView.subviews) {
-        if (view.frame.origin.y >= minY) {
-            view.frame = CGRectOffset(view.frame, 0, shift);
-        }
-    }
-    
-    UIColor* accent = [UIColor colorWithRed:0.62 green:0.58 blue:0.96 alpha:1.0];
-    if (@available(iOS 13.0, *)) {
-        if (self.touchModeSelector.selectedSegmentTintColor != nil) {
-            accent = self.touchModeSelector.selectedSegmentTintColor;
-        }
-    }
-    _doneButton = [self pillButton:@"Done" color:accent];
-    _doneButton.frame = CGRectMake(MAX(minX - 6, 10), minY, 104, 40);
-    [_doneButton addTarget:self action:@selector(doneTapped) forControlEvents:UIControlEventTouchUpInside];
-    
-    _disconnectButton = [self pillButton:@"Disconnect" color:[UIColor colorWithRed:0.86 green:0.24 blue:0.24 alpha:1.0]];
-    _disconnectButton.frame = CGRectMake(CGRectGetMaxX(_doneButton.frame) + 12, minY, 132, 40);
-    [_disconnectButton addTarget:self action:@selector(disconnectTapped) forControlEvents:UIControlEventTouchUpInside];
-    
-    [self.scrollView addSubview:_doneButton];
-    [self.scrollView addSubview:_disconnectButton];
-    [self updateDisconnectButton];
 }
 
 - (UIButton*) pillButton:(NSString*)title color:(UIColor*)color {
@@ -468,6 +460,13 @@ BOOL isCustomResolution(CGSize res) {
     BOOL isVirtual = NO;
     BOOL streaming = [self streamingVirtual:&isVirtual];
     _disconnectButton.hidden = !streaming;
+    // Touch mode belongs to the running session (Desktop starts on touchpad,
+    // Virtual on touchscreen), so it's only adjustable while streaming
+    self.touchModeSelector.enabled = streaming;
+    self.touchModeSelector.alpha = streaming ? 1.0 : 0.4;
+    if (streaming && self.touchModeSelector.selectedSegmentIndex != (FoldSessionTouchscreen() ? 1 : 0)) {
+        self.touchModeSelector.selectedSegmentIndex = FoldSessionTouchscreen() ? 1 : 0;
+    }
     // The render scale only applies to Desktop; Virtual always matches this screen
     BOOL renderScaleApplies = !(streaming && isVirtual);
     if (self.resolutionSelector.enabled != renderScaleApplies) {
@@ -492,6 +491,7 @@ BOOL isCustomResolution(CGSize res) {
 }
 
 - (void) touchModeChanged {
+    FoldSetSessionTouchscreen(self.touchModeSelector.selectedSegmentIndex == 1);
     // Disable on-screen controls in absolute touch mode
     // Fold build: the on-screen gamepad works with either touch mode
 }
@@ -748,7 +748,7 @@ BOOL isCustomResolution(CGSize res) {
     NSInteger framerate = [self getChosenFrameRate];
     NSInteger height = [self getChosenStreamHeight];
     NSInteger width = [self getChosenStreamWidth];
-    NSInteger onscreenControls = [self.onscreenControlSelector selectedSegmentIndex];
+    NSInteger onscreenControls = [self.onscreenControlSelector selectedSegmentIndex] == 1 ? OnScreenControlsLevelFull : OnScreenControlsLevelOff;
     BOOL optimizeGames = [self.optimizeSettingsSelector selectedSegmentIndex] == 1;
     BOOL multiController = [self.multiControllerSelector selectedSegmentIndex] == 1;
     BOOL swapABXYButtons = [self.swapABXYButtonsSelector selectedSegmentIndex] == 1;
@@ -756,15 +756,12 @@ BOOL isCustomResolution(CGSize res) {
     uint32_t preferredCodec = [self getChosenCodecPreference];
     BOOL btMouseSupport = [self.btMouseSelector selectedSegmentIndex] == 1;
     BOOL useFramePacing = [self.framePacingSelector selectedSegmentIndex] == 1;
-    BOOL absoluteTouchMode = [self.touchModeSelector selectedSegmentIndex] == 1;
+    BOOL absoluteTouchMode = NO; // per session now, see FoldSessionTouchscreen()
     BOOL statsOverlay = [self.statsOverlaySelector selectedSegmentIndex] == 1;
     BOOL enableHdr = [self.hdrSelector selectedSegmentIndex] == 1;
     FoldSetRenderScaleIndex((int)[self chosenRenderScaleIndex]);
     if (_desktopScaleSelector != nil && _desktopScaleSelector.selectedSegmentIndex >= 0) {
         FoldSetVirtualDpi(kFoldVirtualDpis[_desktopScaleSelector.selectedSegmentIndex]);
-    }
-    if (_virtualTouchSelector != nil) {
-        FoldSetVirtualTouchscreen(_virtualTouchSelector.selectedSegmentIndex == 1);
     }
     [dataMan saveSettingsWithBitrate:_bitrate
                            framerate:framerate

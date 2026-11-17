@@ -77,9 +77,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     self->streamAspectRatio = (float)streamConfig.width / (float)streamConfig.height;
     
     TemporarySettings* settings = [[[DataManager alloc] init] getSettings];
-    if (streamConfig.foldVirtual) {
-        settings.absoluteTouchMode = FoldVirtualTouchscreen();
-    }
+    settings.absoluteTouchMode = FoldSessionTouchscreen();
     
     keysDown = [[NSMutableSet alloc] init];
     keyInputField = [[KeyboardInputField alloc] initWithFrame:CGRectZero];
