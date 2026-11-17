@@ -13,6 +13,7 @@
 #import "ControllerSupport.h"
 #import "DataManager.h"
 #import "FoldDisplayMatch.h"
+#import "../Input/FoldKeyboard.h"
 
 #import <AVFoundation/AVFoundation.h>
 
@@ -37,21 +38,24 @@
 #if !TARGET_OS_TV
 #pragma mark - Fold input panel
 
-// Shown on the half of a folded iPhone that isn't showing the stream:
-// a laptop-style trackpad with mouse buttons and a row of PC keys.
+// Shown on the half of a folded iPhone that isn't showing the stream, like the
+// bottom half of a laptop: a full PC keyboard with a trackpad and mouse buttons.
 @interface FoldInputPanel : UIView
 @property (nonatomic, weak) StreamView* streamView;
 @property (nonatomic, copy) void (^fullScreenHandler)(void);
 @end
 
 @implementation FoldInputPanel {
+    FoldKeyboardView* _keyboard;
     UIView* _trackpad;
-    UIStackView* _keyRow;
     UIStackView* _buttonRow;
     CGPoint _lastPan;
     CGPoint _lastScroll;
     CGPoint _lastDrag;
     float _accumX, _accumY;
+    float _scrollAccumX, _scrollAccumY;
+    CADisplayLink* _glide;
+    CGPoint _glideVelocity;
 }
 
 static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSInteger tag) {
@@ -59,7 +63,7 @@ static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSIntege
     [b setTitle:title forState:UIControlStateNormal];
     b.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
     [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    b.backgroundColor = [UIColor colorWithWhite:0.18 alpha:1.0];
+    b.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
     b.layer.cornerRadius = 8;
     b.tag = tag;
     [b addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
@@ -72,19 +76,15 @@ static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSIntege
         self.backgroundColor = [UIColor colorWithWhite:0.06 alpha:1.0];
         self.multipleTouchEnabled = YES;
 
-        // Tag = Windows virtual key code; special tags below 0
-        _keyRow = [[UIStackView alloc] initWithArrangedSubviews:@[
-            FoldMakeButton(@"⌨︎", self, @selector(keyTapped:), -1),   // keyboard
-            FoldMakeButton(@"Esc", self, @selector(keyTapped:), 0x1B),
-            FoldMakeButton(@"Tab", self, @selector(keyTapped:), 0x09),
-            FoldMakeButton(@"Win", self, @selector(keyTapped:), 0x5B),
-            FoldMakeButton(@"Alt+Tab", self, @selector(keyTapped:), -2),
-            FoldMakeButton(@"⤢", self, @selector(keyTapped:), -3),          // full screen
-        ]];
-        _keyRow.axis = UILayoutConstraintAxisHorizontal;
-        _keyRow.distribution = UIStackViewDistributionFillEqually;
-        _keyRow.spacing = 6;
-        [self addSubview:_keyRow];
+        _keyboard = [[FoldKeyboardView alloc] initWithStyle:FoldKeyboardStyleFull];
+        __weak FoldInputPanel* weakSelf = self;
+        _keyboard.actionHandler = ^(NSString* action) {
+            FoldInputPanel* strongSelf = weakSelf;
+            if ([action isEqualToString:@"fullscreen"] && strongSelf.fullScreenHandler) {
+                strongSelf.fullScreenHandler();
+            }
+        };
+        [self addSubview:_keyboard];
 
         _trackpad = [[UIView alloc] init];
         _trackpad.backgroundColor = [UIColor colorWithWhite:0.13 alpha:1.0];
@@ -108,6 +108,10 @@ static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSIntege
         twoTap.numberOfTouchesRequired = 2;
         [_trackpad addGestureRecognizer:twoTap];
 
+        UITapGestureRecognizer* threeTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(trackpadThreeFingerTapped:)];
+        threeTap.numberOfTouchesRequired = 3;
+        [_trackpad addGestureRecognizer:threeTap];
+
         // Press and hold, then drag, to click-and-drag
         UILongPressGestureRecognizer* drag = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(trackpadDragged:)];
         drag.minimumPressDuration = 0.35;
@@ -128,7 +132,7 @@ static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSIntege
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    CGFloat pad = 10;
+    CGFloat pad = 8;
     CGRect area = UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets);
     // The panel is laid out while hidden at zero size too; insetting a rect that
     // small produces a null (infinite) rect, which crashes Core Animation.
@@ -136,44 +140,35 @@ static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSIntege
         return;
     }
     area = CGRectInset(area, pad, pad);
-    CGFloat keyH = 40, btnH = 44;
-    _keyRow.frame = CGRectMake(area.origin.x, area.origin.y, area.size.width, keyH);
-    _buttonRow.frame = CGRectMake(area.origin.x, CGRectGetMaxY(area) - btnH, area.size.width, btnH);
-    CGFloat top = CGRectGetMaxY(_keyRow.frame) + 8;
-    _trackpad.frame = CGRectMake(area.origin.x, top, area.size.width, CGRectGetMinY(_buttonRow.frame) - 4 - top);
-}
+    CGFloat btnH = 34;
 
-- (void)sendKey:(short)vk modifiers:(char)mods {
-    LiSendKeyboardEvent(0x8000 | vk, KEY_ACTION_DOWN, mods);
-    usleep(30 * 1000);
-    LiSendKeyboardEvent(0x8000 | vk, KEY_ACTION_UP, mods);
-}
-
-- (void)keyTapped:(UIButton*)sender {
-    switch (sender.tag) {
-        case -1:
-            [self.streamView toggleKeyboard];
-            break;
-        case -2: // Alt+Tab
-            LiSendKeyboardEvent(0x8000 | 0xA4, KEY_ACTION_DOWN, 0);
-            [self sendKey:0x09 modifiers:MODIFIER_ALT];
-            LiSendKeyboardEvent(0x8000 | 0xA4, KEY_ACTION_UP, 0);
-            break;
-        case -3:
-            if (self.fullScreenHandler) {
-                self.fullScreenHandler();
-            }
-            break;
-        default:
-            [self sendKey:(short)sender.tag modifiers:0];
-            break;
+    CGRect keys, pad2;
+    if (area.size.width > area.size.height * 2.2) {
+        // Short and wide (laptop posture held sideways): keyboard left, trackpad right
+        CGFloat kw = floor(area.size.width * 0.7);
+        keys = CGRectMake(area.origin.x, area.origin.y, kw, area.size.height);
+        pad2 = CGRectMake(area.origin.x + kw + pad, area.origin.y, area.size.width - kw - pad, area.size.height);
+    } else {
+        // Keyboard on top (next to the fold), trackpad below it like a laptop
+        CGFloat kh = MIN(floor(area.size.height * 0.6), 5 * 54);
+        keys = CGRectMake(area.origin.x, area.origin.y, area.size.width, kh);
+        CGFloat tw = MIN(area.size.width, MAX(area.size.width * 0.6, 280));
+        CGFloat top = CGRectGetMaxY(keys) + pad;
+        pad2 = CGRectMake(CGRectGetMidX(area) - tw / 2, top, tw, CGRectGetMaxY(area) - top);
     }
+    _keyboard.frame = keys;
+    _buttonRow.frame = CGRectMake(pad2.origin.x, CGRectGetMaxY(pad2) - btnH, pad2.size.width, btnH);
+    _trackpad.frame = CGRectMake(pad2.origin.x, pad2.origin.y, pad2.size.width, pad2.size.height - btnH - 3);
+}
+
+- (void)click:(int)button {
+    LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, button);
+    usleep(20 * 1000);
+    LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, button);
 }
 
 - (void)mouseButtonTapped:(UIButton*)sender {
-    LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, (int)sender.tag);
-    usleep(20 * 1000);
-    LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, (int)sender.tag);
+    [self click:(int)sender.tag];
 }
 
 // Pointer acceleration: slow movements stay precise, fast ones cover the screen
@@ -193,6 +188,7 @@ static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSIntege
 - (void)trackpadMoved:(UIPanGestureRecognizer*)g {
     CGPoint t = [g translationInView:_trackpad];
     if (g.state == UIGestureRecognizerStateBegan) {
+        [self stopGlide];
         _lastPan = t;
         return;
     }
@@ -200,35 +196,96 @@ static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSIntege
     _lastPan = t;
 }
 
-- (void)trackpadScrolled:(UIPanGestureRecognizer*)g {
-    CGPoint t = [g translationInView:_trackpad];
-    if (g.state == UIGestureRecognizerStateBegan) {
-        _lastScroll = t;
-        return;
-    }
-    short dy = (short)((t.y - _lastScroll.y) * 8);
+// Natural scrolling: content follows the fingers, like an iPhone or a Mac trackpad
+- (void)scrollByDelta:(CGPoint)delta {
+    _scrollAccumY += delta.y * 8;
+    _scrollAccumX += -delta.x * 8;
+    short dy = (short)_scrollAccumY, dx = (short)_scrollAccumX;
     if (dy != 0) {
         LiSendHighResScrollEvent(dy);
-        _lastScroll = t;
+        _scrollAccumY -= dy;
+    }
+    if (dx != 0) {
+        LiSendHighResHScrollEvent(dx);
+        _scrollAccumX -= dx;
+    }
+}
+
+- (void)trackpadScrolled:(UIPanGestureRecognizer*)g {
+    CGPoint t = [g translationInView:_trackpad];
+    switch (g.state) {
+        case UIGestureRecognizerStateBegan:
+            [self stopGlide];
+            _lastScroll = t;
+            break;
+        case UIGestureRecognizerStateChanged:
+            [self scrollByDelta:CGPointMake(t.x - _lastScroll.x, t.y - _lastScroll.y)];
+            _lastScroll = t;
+            break;
+        case UIGestureRecognizerStateEnded: {
+            // Keep gliding after the fingers lift, slowing down like iOS scrolling
+            CGPoint v = [g velocityInView:_trackpad];
+            if (hypot(v.x, v.y) > 150) {
+                _glideVelocity = v;
+                _glide = [CADisplayLink displayLinkWithTarget:self selector:@selector(glideStep:)];
+                [_glide addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+- (void)glideStep:(CADisplayLink*)link {
+    CFTimeInterval dt = link.targetTimestamp - link.timestamp;
+    if (dt <= 0 || dt > 0.1) {
+        dt = 1.0 / 60;
+    }
+    [self scrollByDelta:CGPointMake(_glideVelocity.x * dt, _glideVelocity.y * dt)];
+    double decay = pow(0.94, dt * 60);
+    _glideVelocity = CGPointMake(_glideVelocity.x * decay, _glideVelocity.y * decay);
+    if (hypot(_glideVelocity.x, _glideVelocity.y) < 30) {
+        [self stopGlide];
+    }
+}
+
+- (void)stopGlide {
+    [_glide invalidate];
+    _glide = nil;
+}
+
+- (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event {
+    // Touching the trackpad stops a glide, like touching the glass on iOS
+    [self stopGlide];
+    [super touchesBegan:touches withEvent:event];
+}
+
+- (void)willMoveToWindow:(UIWindow*)newWindow {
+    [super willMoveToWindow:newWindow];
+    if (newWindow == nil) {
+        [self stopGlide];
+        [FoldKeyboardView releaseAllModifiers];
     }
 }
 
 - (void)trackpadTapped:(UITapGestureRecognizer*)g {
-    LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT);
-    usleep(20 * 1000);
-    LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_LEFT);
+    [self click:BUTTON_LEFT];
 }
 
 - (void)trackpadTwoFingerTapped:(UITapGestureRecognizer*)g {
-    LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_RIGHT);
-    usleep(20 * 1000);
-    LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_RIGHT);
+    [self click:BUTTON_RIGHT];
+}
+
+- (void)trackpadThreeFingerTapped:(UITapGestureRecognizer*)g {
+    [self click:BUTTON_MIDDLE];
 }
 
 - (void)trackpadDragged:(UILongPressGestureRecognizer*)g {
     CGPoint p = [g locationInView:_trackpad];
     switch (g.state) {
         case UIGestureRecognizerStateBegan:
+            [self stopGlide];
             _lastDrag = p;
             LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT);
             break;

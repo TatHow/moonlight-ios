@@ -14,6 +14,7 @@
 #import "RelativeTouchHandler.h"
 #import "AbsoluteTouchHandler.h"
 #import "KeyboardInputField.h"
+#import "FoldKeyboardImpl.h"
 
 static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
@@ -375,21 +376,15 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         keyInputField.delegate = self;
         keyInputField.text = @"0";
 #if !TARGET_OS_TV
-        // Prepare the toolbar above the keyboard for more options
-        UIToolbar *customToolbarView = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, self.bounds.size.width, 44)];
-        
-        UIBarButtonItem *doneBarButton = [self createButtonWithImageNamed:@"DoneIcon.png" backgroundColor:[UIColor clearColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x00 isToggleable:NO];
-        UIBarButtonItem *windowsBarButton = [self createButtonWithImageNamed:@"WindowsIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x5B isToggleable:YES];
-        UIBarButtonItem *tabBarButton = [self createButtonWithImageNamed:@"TabIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x09 isToggleable:NO];
-        UIBarButtonItem *shiftBarButton = [self createButtonWithImageNamed:@"ShiftIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA0 isToggleable:YES];
-        UIBarButtonItem *escapeBarButton = [self createButtonWithImageNamed:@"EscapeIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x1B isToggleable:NO];
-        UIBarButtonItem *controlBarButton = [self createButtonWithImageNamed:@"ControlIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA2 isToggleable:YES];
-        UIBarButtonItem *altBarButton = [self createButtonWithImageNamed:@"AltIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0xA4 isToggleable:YES];
-        UIBarButtonItem *deleteBarButton = [self createButtonWithImageNamed:@"DeleteIcon.png" backgroundColor:[UIColor blackColor] target:self action:@selector(toolbarButtonClicked:) keyCode:0x2E isToggleable:NO];
-        UIBarButtonItem *flexibleSpace = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-        
-        [customToolbarView setItems:[NSArray arrayWithObjects:doneBarButton, windowsBarButton, escapeBarButton, tabBarButton, shiftBarButton, controlBarButton, altBarButton, deleteBarButton, flexibleSpace, nil]];
-        keyInputField.inputAccessoryView = customToolbarView;
+        // Fold fork: PC key bar above the keyboard (sticky Ctrl/Alt/Shift/Win, Fn, arrows)
+        FoldKeyboardView* keyBar = [[FoldKeyboardView alloc] initWithStyle:FoldKeyboardStyleBar];
+        __weak StreamView* weakSelf = self;
+        keyBar.actionHandler = ^(NSString* action) {
+            if ([action isEqualToString:@"hide"] && weakSelf != nil) {
+                [weakSelf toggleKeyboard];
+            }
+        };
+        keyInputField.inputAccessoryView = keyBar;
 #endif
         [keyInputField becomeFirstResponder];
         [keyInputField addTarget:self action:@selector(onKeyboardPressed:) forControlEvents:UIControlEventEditingChanged];
@@ -784,9 +779,12 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
     // This method is called when the "Return" key is pressed.
-    LiSendKeyboardEvent(0x0d, KEY_ACTION_DOWN, 0);
-    usleep(50 * 1000);
-    LiSendKeyboardEvent(0x0d, KEY_ACTION_UP, 0);
+    dispatch_async([FoldKeyboardView keyQueue], ^{
+        LiSendKeyboardEvent(0x0d, KEY_ACTION_DOWN, 0);
+        usleep(50 * 1000);
+        LiSendKeyboardEvent(0x0d, KEY_ACTION_UP, 0);
+    });
+    [FoldKeyboardView externalKeySent];
     return NO;
 }
 
@@ -795,11 +793,13 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         LiSendKeyboardEvent([keyCode shortValue], KEY_ACTION_UP, 0);
     }
     [keysDown removeAllObjects];
+    [FoldKeyboardView releaseAllModifiers];
 }
 
 - (void)onKeyboardPressed:(UITextField *)textField {
     NSString* inputText = textField.text;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+    // Fold fork: serial key queue keeps typed keys in order with sticky modifiers
+    dispatch_async([FoldKeyboardView keyQueue], ^{
         // If the text became empty, we know the user pressed the backspace key.
         if ([inputText isEqual:@""]) {
             LiSendKeyboardEvent(0x08, KEY_ACTION_DOWN, 0);
@@ -825,11 +825,13 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
             for (int i = 1; i < [inputText length]; i++) {
                 struct KeyEvent event = [KeyboardSupport translateKeyEvent:[inputText characterAtIndex:i] withModifierFlags:0];
                 assert(event.keycode != 0);
-                [self sendLowLevelEvent:event];
+                [self sendLowLevelEventNow:event];
             }
         }
     });
     
+    [FoldKeyboardView externalKeySent];
+
     // Reset text field back to known state
     textField.text = @"0";
     
@@ -850,20 +852,25 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 }
 
 - (void)sendLowLevelEvent:(struct KeyEvent)event {
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        // When we want to send a modified key (like uppercase letters) we need to send the
-        // modifier ("shift") seperately from the key itself.
-        if (event.modifier != 0) {
-            LiSendKeyboardEvent(event.modifierKeycode, KEY_ACTION_DOWN, event.modifier);
-        }
-        // Let the host know these are not (necessarily) normalized to US English scancodes
-        LiSendKeyboardEvent2(event.keycode, KEY_ACTION_DOWN, event.modifier, SS_KBE_FLAG_NON_NORMALIZED);
-        usleep(50 * 1000);
-        LiSendKeyboardEvent2(event.keycode, KEY_ACTION_UP, event.modifier, SS_KBE_FLAG_NON_NORMALIZED);
-        if (event.modifier != 0) {
-            LiSendKeyboardEvent(event.modifierKeycode, KEY_ACTION_UP, event.modifier);
-        }
+    dispatch_async([FoldKeyboardView keyQueue], ^{
+        [self sendLowLevelEventNow:event];
     });
+}
+
+// Sends on the calling thread (used from blocks already on the key queue)
+- (void)sendLowLevelEventNow:(struct KeyEvent)event {
+    // When we want to send a modified key (like uppercase letters) we need to send the
+    // modifier ("shift") seperately from the key itself.
+    if (event.modifier != 0) {
+        LiSendKeyboardEvent(event.modifierKeycode, KEY_ACTION_DOWN, event.modifier);
+    }
+    // Let the host know these are not (necessarily) normalized to US English scancodes
+    LiSendKeyboardEvent2(event.keycode, KEY_ACTION_DOWN, event.modifier, SS_KBE_FLAG_NON_NORMALIZED);
+    usleep(50 * 1000);
+    LiSendKeyboardEvent2(event.keycode, KEY_ACTION_UP, event.modifier, SS_KBE_FLAG_NON_NORMALIZED);
+    if (event.modifier != 0) {
+        LiSendKeyboardEvent(event.modifierKeycode, KEY_ACTION_UP, event.modifier);
+    }
 }
 
 - (BOOL)canBecomeFirstResponder {
