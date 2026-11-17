@@ -25,7 +25,7 @@ static NSString* const kFoldDisconnectNotification = @"FoldDisconnectRequested";
 // Desktop render scale, relative to 3840x2160
 static const int kFoldRenderScaleCount = 4;
 static const int kFoldRenderScaleDefault = 1; // 2/3 = 1440p
-static NSString* const kFoldRenderScaleTitles[] = { @"1× · 4K", @"⅔ · 1440p", @"½ · 1080p", @"⅓ · 720p" };
+static NSString* const kFoldRenderScaleTitles[] = { @"1× 4K", @"⅔ 1440p", @"½ 1080p", @"⅓ 720p" };
 static const CGSize kFoldRenderScaleSizes[] = { {3840, 2160}, {2560, 1440}, {1920, 1080}, {1280, 720} };
 
 // Windows scaling for the virtual display

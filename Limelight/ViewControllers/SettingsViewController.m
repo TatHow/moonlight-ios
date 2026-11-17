@@ -11,6 +11,7 @@
 #import "DataManager.h"
 #import "FoldDisplayMatch.h"
 #import "SWRevealViewController.h"
+#import "StreamConfiguration.h"
 
 #import <VideoToolbox/VideoToolbox.h>
 #import <AVFoundation/AVFoundation.h>
@@ -22,6 +23,8 @@
     UISegmentedControl* _virtualTouchSelector;
     UIButton* _doneButton;
     UIButton* _disconnectButton;
+    CGFloat _laidOutWidth;
+    CGFloat _laidOutLeft;
 }
 
 
@@ -78,6 +81,7 @@ CGSize resolutionTable[RESOLUTION_TABLE_SIZE];
 // we'll update content size here.
 -(void)viewDidLayoutSubviews {
     [self updateDisconnectButton];
+    [self foldLayoutToWidth];
     CGFloat highestViewY = 0;
     
     // Enumerate the scroll view's subviews looking for the
@@ -100,25 +104,13 @@ CGSize resolutionTable[RESOLUTION_TABLE_SIZE];
     }
     
     // Add a bit of padding so the view doesn't end right at the button of the display
-    self.scrollView.contentSize = CGSizeMake(self.scrollView.contentSize.width,
+    self.scrollView.contentSize = CGSizeMake(self.scrollView.bounds.size.width,
                                              highestViewY + 20);
 }
 
-// Adjust the subviews for the safe area on the iPhone X.
-- (void)viewSafeAreaInsetsDidChange {
-    [super viewSafeAreaInsetsDidChange];
-    
-    if (@available(iOS 11.0, *)) {
-        for (UIView* view in self.view.subviews) {
-            // HACK: The official safe area is much too large for our purposes
-            // so we'll just use the presence of any safe area to indicate we should
-            // pad by 20.
-            if (self.view.safeAreaInsets.left >= 20 || self.view.safeAreaInsets.right >= 20) {
-                view.frame = CGRectMake(view.frame.origin.x + 20, view.frame.origin.y, view.frame.size.width, view.frame.size.height);
-            }
-        }
-    }
-}
+// Fold build: the controls are laid out to the pane's width in
+// viewDidLayoutSubviews instead of being nudged right for the safe area
+// (which added up every time the safe area changed).
 
 BOOL isCustomResolution(CGSize res) {
     if (res.width == 0 && res.height == 0) {
@@ -254,6 +246,7 @@ BOOL isCustomResolution(CGSize res) {
     for (int i = 0; i < kFoldRenderScaleCount; i++) {
         [self.resolutionSelector insertSegmentWithTitle:kFoldRenderScaleTitles[i] atIndex:i animated:NO];
     }
+    self.resolutionSelector.apportionsSegmentWidthsByContent = YES;
     if (!VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)) {
         [self.resolutionSelector setEnabled:NO forSegmentAtIndex:0];
     }
@@ -357,6 +350,60 @@ BOOL isCustomResolution(CGSize res) {
     [self insertRowBelow:self.touchModeSelector title:@"Touch Mode (Virtual)" control:_virtualTouchSelector];
 }
 
+// Lay every row out across the visible width of the pane with a small margin
+- (void) foldLayoutToWidth {
+    CGFloat paneWidth = self.view.bounds.size.width;
+    SWRevealViewController* reveal = self.revealViewController;
+    if (reveal != nil && reveal.rearViewRevealWidth > 0) {
+        paneWidth = MIN(paneWidth, reveal.rearViewRevealWidth);
+    }
+    CGFloat left = MAX(self.view.safeAreaInsets.left, 0) + 16;
+    CGFloat width = MAX(paneWidth - left - 16, 200);
+    if (fabs(width - _laidOutWidth) < 1 && fabs(left - _laidOutLeft) < 1) {
+        return;
+    }
+    _laidOutWidth = width;
+    _laidOutLeft = left;
+    
+    for (UIView* view in self.scrollView.subviews) {
+        CGRect frame = view.frame;
+        if (view == _doneButton) {
+            frame.origin.x = left;
+        }
+        else if (view == _disconnectButton) {
+            frame.origin.x = left + _doneButton.frame.size.width + 12;
+        }
+        else if ([view isKindOfClass:[UILabel class]]) {
+            frame.origin.x = left + 4;
+            frame.size.width = width - 4;
+        }
+        else if ([view isKindOfClass:[UISegmentedControl class]] || [view isKindOfClass:[UISlider class]] ||
+                 view == self.resolutionDisplayView) {
+            frame.origin.x = left;
+            frame.size.width = width;
+        }
+        else {
+            continue;
+        }
+        view.frame = frame;
+    }
+    [self updateResolutionDisplayViewText];
+}
+
+// The mode of the stream running behind the pane, if any
+- (BOOL) streamingVirtual:(BOOL*)isVirtual {
+    UIViewController* front = self.revealViewController.frontViewController;
+    if ([front isKindOfClass:[UINavigationController class]]) {
+        front = ((UINavigationController*)front).topViewController;
+    }
+    if (![front isKindOfClass:NSClassFromString(@"StreamFrameViewController")]) {
+        return NO;
+    }
+    StreamConfiguration* config = [front valueForKey:@"streamConfig"];
+    *isVirtual = config.foldVirtual;
+    return YES;
+}
+
 // Done (close settings) and Disconnect (end the stream) above everything else
 - (void) addTopBar {
     CGFloat minY = CGFLOAT_MAX;
@@ -418,8 +465,16 @@ BOOL isCustomResolution(CGSize res) {
 }
 
 - (void) updateDisconnectButton {
-    BOOL streaming = [self isStreaming];
+    BOOL isVirtual = NO;
+    BOOL streaming = [self streamingVirtual:&isVirtual];
     _disconnectButton.hidden = !streaming;
+    // The render scale only applies to Desktop; Virtual always matches this screen
+    BOOL renderScaleApplies = !(streaming && isVirtual);
+    if (self.resolutionSelector.enabled != renderScaleApplies) {
+        self.resolutionSelector.enabled = renderScaleApplies;
+        self.resolutionSelector.alpha = renderScaleApplies ? 1.0 : 0.4;
+        [self updateResolutionDisplayViewText];
+    }
 }
 
 - (void) viewWillAppear:(BOOL)animated {
@@ -596,30 +651,31 @@ BOOL isCustomResolution(CGSize res) {
 }
 
 - (void) updateResolutionDisplayViewText {
-    NSInteger width = [self getChosenStreamWidth];
-    NSInteger height = [self getChosenStreamHeight];
-    CGFloat viewFrameWidth = self.resolutionDisplayView.frame.size.width;
-    CGFloat viewFrameHeight = self.resolutionDisplayView.frame.size.height;
-    CGFloat padding = 10;
-    CGFloat fontSize = [UIFont smallSystemFontSize];
-    
     for (UIView *subview in self.resolutionDisplayView.subviews) {
         [subview removeFromSuperview];
     }
-    UILabel *label1 = [[UILabel alloc] init];
+    BOOL isVirtual = NO;
+    BOOL streaming = [self streamingVirtual:&isVirtual];
     CGSize matched = [self matchedStreamSize];
-    label1.text = [NSString stringWithFormat:@"Virtual: %d x %d  ·  Desktop: ", (int)matched.width, (int)matched.height];
-    label1.font = [UIFont systemFontOfSize:fontSize];
-    [label1 sizeToFit];
-    label1.frame = CGRectMake(padding, (viewFrameHeight - label1.frame.size.height) / 2, label1.frame.size.width, label1.frame.size.height);
-
-    UILabel *label2 = [[UILabel alloc] init];
-    label2.text = [NSString stringWithFormat:@"%ld x %ld", (long)width, (long)height];
-    [label2 sizeToFit];
-    label2.frame = CGRectMake(viewFrameWidth - label2.frame.size.width - padding, (viewFrameHeight - label2.frame.size.height) / 2, label2.frame.size.width, label2.frame.size.height);
-
-    [self.resolutionDisplayView addSubview:label1];
-    [self.resolutionDisplayView addSubview:label2];
+    NSString* text;
+    if (streaming && isVirtual) {
+        text = [NSString stringWithFormat:@"Virtual matches this screen: %d x %d", (int)matched.width, (int)matched.height];
+    }
+    else if (streaming) {
+        text = [NSString stringWithFormat:@"Desktop streams at %d x %d", (int)[self getChosenStreamWidth], (int)[self getChosenStreamHeight]];
+    }
+    else {
+        text = [NSString stringWithFormat:@"Desktop %d x %d  ·  Virtual %d x %d", (int)[self getChosenStreamWidth], (int)[self getChosenStreamHeight], (int)matched.width, (int)matched.height];
+    }
+    
+    CGFloat padding = 10;
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectInset(self.resolutionDisplayView.bounds, padding, 0)];
+    label.text = text;
+    label.font = [UIFont systemFontOfSize:[UIFont smallSystemFontSize]];
+    label.adjustsFontSizeToFitWidth = YES;
+    label.minimumScaleFactor = 0.7;
+    label.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.resolutionDisplayView addSubview:label];
 }
 
 - (void) bitrateSliderMoved {

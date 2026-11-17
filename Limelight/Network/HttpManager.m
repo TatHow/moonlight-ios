@@ -282,7 +282,7 @@
                            !config.multiController ? 1 : 0,
                            // Fold build: the virtual display app gets a display sized to this
                            // screen plus Windows scaling (Sunshine ignores both arguments)
-                           config.foldVirtual ? [NSString stringWithFormat:@"&virtualDisplay=1&foldDpi=%d", config.foldDpi] : @"",
+                           config.foldVirtual ? [NSString stringWithFormat:@"&virtualDisplay=1&foldDpi=%d", config.foldDpi] : @"&foldDesktop=1",
                            LiGetLaunchUrlQueryParameters()];
     Log(LOG_I, @"Requesting: %@", urlString);
     // This blocks while the app is launching
