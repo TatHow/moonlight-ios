@@ -1114,6 +1114,12 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
 #if __has_include(<UIKit/UIHinge.h>)
     if (@available(iOS 27.1, *)) {
         CGRect bounds = self.view.bounds;
+        // Outer screen (phone closed): the stream goes all the way to the edge
+        BOOL outerScreen = _hingeStatus == UIHingeStatusClosed ||
+            (_hingeStatus == UIHingeStatusUnknown && MIN(bounds.size.width, bounds.size.height) < 500);
+        if (outerScreen) {
+            return CGRectZero;
+        }
         NSArray<UIViewReservedRegion*>* regions = [self.view reservedRegionsOfKind:[UIViewReservedRegionKind occlusionRegionKind]];
         for (UIViewReservedRegion* region in regions) {
             if (!region.isActive) {
