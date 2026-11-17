@@ -48,7 +48,6 @@
 @implementation FoldInputPanel {
     FoldKeyboardView* _keyboard;
     UIView* _trackpad;
-    UIStackView* _buttonRow;
     CGPoint _lastPan;
     CGPoint _lastScroll;
     CGPoint _lastDrag;
@@ -56,18 +55,6 @@
     float _scrollAccumX, _scrollAccumY;
     CADisplayLink* _glide;
     CGPoint _glideVelocity;
-}
-
-static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSInteger tag) {
-    UIButton* b = [UIButton buttonWithType:UIButtonTypeSystem];
-    [b setTitle:title forState:UIControlStateNormal];
-    b.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
-    [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    b.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
-    b.layer.cornerRadius = 8;
-    b.tag = tag;
-    [b addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
-    return b;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -101,7 +88,13 @@ static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSIntege
         scroll.maximumNumberOfTouches = 2;
         [_trackpad addGestureRecognizer:scroll];
 
+        // Single tap = left click, double tap = right click
+        UITapGestureRecognizer* doubleTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(trackpadTwoFingerTapped:)];
+        doubleTap.numberOfTapsRequired = 2;
+        [_trackpad addGestureRecognizer:doubleTap];
+
         UITapGestureRecognizer* tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(trackpadTapped:)];
+        [tap requireGestureRecognizerToFail:doubleTap];
         [_trackpad addGestureRecognizer:tap];
 
         UITapGestureRecognizer* twoTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(trackpadTwoFingerTapped:)];
@@ -118,14 +111,6 @@ static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSIntege
         [_trackpad addGestureRecognizer:drag];
         [move requireGestureRecognizerToFail:drag];
 
-        _buttonRow = [[UIStackView alloc] initWithArrangedSubviews:@[
-            FoldMakeButton(@"", self, @selector(mouseButtonTapped:), BUTTON_LEFT),
-            FoldMakeButton(@"", self, @selector(mouseButtonTapped:), BUTTON_RIGHT),
-        ]];
-        _buttonRow.axis = UILayoutConstraintAxisHorizontal;
-        _buttonRow.distribution = UIStackViewDistributionFillEqually;
-        _buttonRow.spacing = 2;
-        [self addSubview:_buttonRow];
     }
     return self;
 }
@@ -140,7 +125,6 @@ static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSIntege
         return;
     }
     area = CGRectInset(area, pad, pad);
-    CGFloat btnH = 34;
 
     CGRect keys, pad2;
     if (area.size.width > area.size.height * 2.2) {
@@ -157,8 +141,7 @@ static UIButton* FoldMakeButton(NSString* title, id target, SEL action, NSIntege
         pad2 = CGRectMake(area.origin.x, top, area.size.width, CGRectGetMaxY(area) - top);
     }
     _keyboard.frame = keys;
-    _buttonRow.frame = CGRectMake(pad2.origin.x, CGRectGetMaxY(pad2) - btnH, pad2.size.width, btnH);
-    _trackpad.frame = CGRectMake(pad2.origin.x, pad2.origin.y, pad2.size.width, pad2.size.height - btnH - 3);
+    _trackpad.frame = pad2;
 }
 
 - (void)click:(int)button {
