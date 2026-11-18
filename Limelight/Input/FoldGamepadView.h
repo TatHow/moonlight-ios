@@ -2,9 +2,9 @@
 //  FoldGamepadView.h
 //  Moonlight
 //
-//  Fold build on-screen gamepad, laid out like a handheld:
-//    top-left  ZL, L3, L          top-right  ZR, R3, R
-//    top-center  –  (gear)  +
+//  Fold build on-screen gamepad, a generic Xbox controller laid out like a handheld:
+//    top-left  LT, LS, LB         top-right  RT, RS, RB
+//    top-center  View  (gear)  Menu
 //    bottom-left  left stick + d-pad
 //    bottom-right right stick + A/B/X/Y diamond
 //  It sends controller 0 straight to the host. Touches that don't start on a
@@ -70,14 +70,14 @@ static UIColor* FoldPadFill(BOOL pressed) {
         _touches = [NSMutableDictionary dictionary];
         _haptic = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
 
-        _zl = [self addButton:@"ZL" kind:FoldPadTrigger flag:0];
-        _zr = [self addButton:@"ZR" kind:FoldPadTrigger flag:1];
-        _l = [self addButton:@"L" kind:FoldPadButton flag:LB_FLAG];
-        _r = [self addButton:@"R" kind:FoldPadButton flag:RB_FLAG];
-        _l3 = [self addButton:@"L3" kind:FoldPadButton flag:LS_CLK_FLAG];
-        _r3 = [self addButton:@"R3" kind:FoldPadButton flag:RS_CLK_FLAG];
-        _minus = [self addButton:@"–" kind:FoldPadButton flag:BACK_FLAG];
-        _plus = [self addButton:@"+" kind:FoldPadButton flag:PLAY_FLAG];
+        _zl = [self addButton:@"LT" kind:FoldPadTrigger flag:0];
+        _zr = [self addButton:@"RT" kind:FoldPadTrigger flag:1];
+        _l = [self addButton:@"LB" kind:FoldPadButton flag:LB_FLAG];
+        _r = [self addButton:@"RB" kind:FoldPadButton flag:RB_FLAG];
+        _l3 = [self addButton:@"LS" kind:FoldPadButton flag:LS_CLK_FLAG];
+        _r3 = [self addButton:@"RS" kind:FoldPadButton flag:RS_CLK_FLAG];
+        _minus = [self addButton:@"⧉" kind:FoldPadButton flag:BACK_FLAG];
+        _plus = [self addButton:@"≡" kind:FoldPadButton flag:PLAY_FLAG];
         _gear = [self addButton:@"⚙︎" kind:FoldPadGear flag:0];
         // Positions follow the usual Xbox layout so PC games show the right prompts
         _y = [self addButton:@"Y" kind:FoldPadButton flag:Y_FLAG];
@@ -168,7 +168,7 @@ static void FoldPadPlace(FoldPadControl* c, CGRect frame, CGFloat radius, CGFloa
     CGFloat minY = CGRectGetMinY(r), maxY = CGRectGetMaxY(r);
     CGFloat slop = 6 * s;
 
-    // Shoulders: ZL / ZR on top with the stick clicks beside them, L / R below
+    // Shoulders: LT / RT on top with the stick clicks beside them, L / R below
     CGFloat tw = 80 * s, th = 44 * s, cl = 44 * s, gap = 10 * s;
     FoldPadPlace(_zl, CGRectMake(minX, minY, tw, th), th / 2, 17 * s, slop);
     FoldPadPlace(_zr, CGRectMake(maxX - tw, minY, tw, th), th / 2, 17 * s, slop);
@@ -177,7 +177,7 @@ static void FoldPadPlace(FoldPadControl* c, CGRect frame, CGFloat radius, CGFloa
     FoldPadPlace(_l, CGRectMake(minX, minY + th + gap, tw, 40 * s), 12 * s, 17 * s, slop);
     FoldPadPlace(_r, CGRectMake(maxX - tw, minY + th + gap, tw, 40 * s), 12 * s, 17 * s, slop);
 
-    // – gear + in the middle of the top row, or one row down if the screen is narrow
+    // View, gear, Menu in the middle of the top row, or one row down if the screen is narrow
     CGFloat pw = 46 * s, ph = 30 * s, gd = 36 * s;
     CGFloat groupW = pw * 2 + gd + gap * 2;
     CGFloat sideW = tw + gap + cl;
