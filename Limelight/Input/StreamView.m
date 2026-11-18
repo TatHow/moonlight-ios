@@ -663,9 +663,24 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
             config.elements = [NSSet setWithArray:@[GCInputLeftThumbstick, GCInputRightThumbstick,
                                                     GCInputButtonA, GCInputButtonB, GCInputButtonX, GCInputButtonY,
                                                     GCInputLeftShoulder, GCInputRightShoulder,
-                                                    GCInputLeftTrigger, GCInputRightTrigger,
-                                                    GCInputButtonMenu, GCInputButtonOptions]];
-            GCVirtualController* pad = [[GCVirtualController alloc] initWithConfiguration:config];
+                                                    GCInputLeftTrigger, GCInputRightTrigger]];
+            GCVirtualController* pad = nil;
+            @try {
+                pad = [[GCVirtualController alloc] initWithConfiguration:config];
+            }
+            @catch (NSException* e) {
+                Log(LOG_W, @"On-screen gamepad layout rejected: %@", e.reason);
+                // Fall back to the minimal layout every iOS version accepts
+                config.elements = [NSSet setWithArray:@[GCInputLeftThumbstick, GCInputButtonA, GCInputButtonB]];
+                @try {
+                    pad = [[GCVirtualController alloc] initWithConfiguration:config];
+                }
+                @catch (NSException* e2) {
+                    Log(LOG_E, @"On-screen gamepad unavailable: %@", e2.reason);
+                    foldOscLevel = OnScreenControlsLevelOff;
+                    return;
+                }
+            }
             foldVirtualPad = pad;
             [pad connectWithReplyHandler:^(NSError* error) {
                 if (error != nil) {
