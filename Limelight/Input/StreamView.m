@@ -7,7 +7,6 @@
 //
 
 #import "StreamView.h"
-@import GameController;
 #include <Limelight.h>
 #import "DataManager.h"
 #import "ControllerSupport.h"
@@ -17,6 +16,9 @@
 #import "KeyboardInputField.h"
 #import "FoldKeyboardImpl.h"
 #import "../ViewControllers/FoldDisplayMatch.h"
+#if !TARGET_OS_TV
+#import "FoldGamepadView.h"
+#endif
 
 @interface StreamView ()
 - (CGSize) getVideoAreaSize;
@@ -56,7 +58,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     UIResponder* touchHandler;
     __weak ControllerSupport* foldControllerSupport;
     OnScreenControlsLevel foldOscLevel;
-    id foldVirtualPad;  // GCVirtualController (iOS 15+)
+    id foldVirtualPad;  // FoldGamepadView
     
     id<UserInteractionDelegate> interactionDelegate;
     NSTimer* interactionTimer;
@@ -105,8 +107,7 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     foldControllerSupport = controllerSupport;
     foldOscLevel = (OnScreenControlsLevel)[settings.onscreenControls integerValue];
     OnScreenControlsLevel level = (OnScreenControlsLevel)[settings.onscreenControls integerValue];
-    // Fold build: the on-screen gamepad is Apple's virtual controller (the
-    // standard iPhone layout), which shows up as a real controller
+    // Fold build: the on-screen gamepad is our own handheld-style overlay
     [onScreenControls setLevel:OnScreenControlsLevelOff];
     foldOscLevel = OnScreenControlsLevelOff;
     [self foldSetOnScreenControls:level];
@@ -657,41 +658,16 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
         return;
     }
     foldOscLevel = level;
-    if (@available(iOS 15.0, *)) {
-        if (level != OnScreenControlsLevelOff && foldVirtualPad == nil) {
-            GCVirtualControllerConfiguration* config = [[GCVirtualControllerConfiguration alloc] init];
-            config.elements = [NSSet setWithArray:@[GCInputLeftThumbstick, GCInputRightThumbstick,
-                                                    GCInputButtonA, GCInputButtonB, GCInputButtonX, GCInputButtonY,
-                                                    GCInputLeftShoulder, GCInputRightShoulder,
-                                                    GCInputLeftTrigger, GCInputRightTrigger]];
-            GCVirtualController* pad = nil;
-            @try {
-                pad = [[GCVirtualController alloc] initWithConfiguration:config];
-            }
-            @catch (NSException* e) {
-                Log(LOG_W, @"On-screen gamepad layout rejected: %@", e.reason);
-                // Fall back to the minimal layout every iOS version accepts
-                config.elements = [NSSet setWithArray:@[GCInputLeftThumbstick, GCInputButtonA, GCInputButtonB]];
-                @try {
-                    pad = [[GCVirtualController alloc] initWithConfiguration:config];
-                }
-                @catch (NSException* e2) {
-                    Log(LOG_E, @"On-screen gamepad unavailable: %@", e2.reason);
-                    foldOscLevel = OnScreenControlsLevelOff;
-                    return;
-                }
-            }
-            foldVirtualPad = pad;
-            [pad connectWithReplyHandler:^(NSError* error) {
-                if (error != nil) {
-                    Log(LOG_W, @"On-screen gamepad failed to connect: %@", error);
-                }
-            }];
-        }
-        else if (level == OnScreenControlsLevelOff && foldVirtualPad != nil) {
-            [(GCVirtualController*)foldVirtualPad disconnect];
-            foldVirtualPad = nil;
-        }
+    if (level != OnScreenControlsLevelOff && foldVirtualPad == nil) {
+        FoldGamepadView* pad = [[FoldGamepadView alloc] initWithFrame:self.bounds];
+        foldVirtualPad = pad;
+        [self addSubview:pad];
+    }
+    else if (level == OnScreenControlsLevelOff && foldVirtualPad != nil) {
+        FoldGamepadView* pad = (FoldGamepadView*)foldVirtualPad;
+        [pad releaseAll];
+        [pad removeFromSuperview];
+        foldVirtualPad = nil;
     }
 }
 

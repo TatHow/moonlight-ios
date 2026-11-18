@@ -21,6 +21,8 @@ static NSString* const kFoldVirtualTouchscreenKey = @"FoldVirtualTouchscreen";
 // Posted by the settings screen; observed by the stream
 static NSString* const kFoldSettingsClosedNotification = @"FoldSettingsClosed";
 static NSString* const kFoldDisconnectNotification = @"FoldDisconnectRequested";
+// Posted by the on-screen gamepad's gear button
+static NSString* const kFoldOpenSettingsNotification = @"FoldOpenSettingsRequested";
 
 // Desktop render scale, relative to 3840x2160
 static const int kFoldRenderScaleCount = 4;

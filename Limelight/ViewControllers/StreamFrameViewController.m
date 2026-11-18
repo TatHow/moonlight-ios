@@ -475,6 +475,11 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
                                                  name:kFoldDisconnectNotification
                                                object:nil];
 
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(foldOpenSettingsRequested:)
+                                                 name:kFoldOpenSettingsNotification
+                                               object:nil];
+
 #if 0
     // FIXME: This doesn't work reliably on iPad for some reason. Showing and hiding the keyboard
     // several times in a row will not correctly restore the state of the UIScrollView.
@@ -770,6 +775,21 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     if (_exitSwipeRecognizer.state != UIGestureRecognizerStateBegan) {
         return;
     }
+    [self foldOpenSettings];
+#else
+    [self returnToMainFrame];
+#endif
+}
+
+// The on-screen gamepad's gear button
+- (void)foldOpenSettingsRequested:(NSNotification*)note {
+#if !TARGET_OS_TV
+    [self foldOpenSettings];
+#endif
+}
+
+#if !TARGET_OS_TV
+- (void)foldOpenSettings {
     SWRevealViewController* reveal = self.revealViewController;
     if (reveal == nil) {
         [self returnToMainFrame];
@@ -783,10 +803,8 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         [reveal setFrontViewPosition:FrontViewPositionRight animated:YES];
         [self foldAddSettingsShield];
     }
-#else
-    [self returnToMainFrame];
-#endif
 }
+#endif
 
 // While settings are open, the visible strip of the stream closes them on tap
 // (and doesn't send touches to the PC)
