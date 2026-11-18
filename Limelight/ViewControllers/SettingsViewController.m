@@ -20,7 +20,8 @@
 @implementation SettingsViewController {
     NSInteger _bitrate;
     NSInteger _lastSelectedResolutionIndex;
-    UISegmentedControl* _desktopScaleSelector;   // Virtual display scaling
+    UISegmentedControl* _desktopScaleSelector;   // Windows display scaling
+    UISegmentedControl* _gamepadOpacitySelector;
     UIButton* _advancedButton;
     BOOL _showAdvanced;
     NSMapTable<UIView*, UILabel*>* _rowLabels;  // control -> its title label
@@ -315,7 +316,16 @@ BOOL isCustomResolution(CGSize res) {
     _desktopScaleSelector = [self newSelectorWithItems:items];
     _desktopScaleSelector.selectedSegmentIndex = FoldVirtualDpiIndex();
     [self.scrollView addSubview:_desktopScaleSelector];
-    [_rowLabels setObject:[self newRowLabel:@"Windows Scaling (Virtual)"] forKey:_desktopScaleSelector];
+    [_rowLabels setObject:[self newRowLabel:@"Windows Scaling"] forKey:_desktopScaleSelector];
+    
+    NSMutableArray* opacities = [[NSMutableArray alloc] init];
+    for (int i = 0; i < kFoldGamepadOpacityCount; i++) {
+        [opacities addObject:[NSString stringWithFormat:@"%d%%", kFoldGamepadOpacities[i]]];
+    }
+    _gamepadOpacitySelector = [self newSelectorWithItems:opacities];
+    _gamepadOpacitySelector.selectedSegmentIndex = FoldGamepadOpacityIndex();
+    [self.scrollView addSubview:_gamepadOpacitySelector];
+    [_rowLabels setObject:[self newRowLabel:@"Gamepad Opacity"] forKey:_gamepadOpacitySelector];
     
     UIColor* accent = [UIColor colorWithRed:0.62 green:0.58 blue:0.96 alpha:1.0];
     if (@available(iOS 13.0, *)) {
@@ -364,7 +374,7 @@ BOOL isCustomResolution(CGSize res) {
     
     NSArray<UIView*>* mainRows = @[self.resolutionSelector, self.resolutionDisplayView, _desktopScaleSelector,
                                    self.touchModeSelector, self.onscreenControlSelector, self.framerateSelector, self.bitrateSlider];
-    NSArray<UIView*>* advancedRows = @[self.codecSelector, self.hdrSelector, self.optimizeSettingsSelector, self.audioOnPCSelector,
+    NSArray<UIView*>* advancedRows = @[_gamepadOpacitySelector, self.codecSelector, self.hdrSelector, self.optimizeSettingsSelector, self.audioOnPCSelector,
                                        self.multiControllerSelector, self.swapABXYButtonsSelector, self.framePacingSelector,
                                        self.btMouseSelector, self.statsOverlaySelector];
     
@@ -464,9 +474,6 @@ BOOL isCustomResolution(CGSize res) {
     // Virtual on touchscreen), so it's only adjustable while streaming
     self.touchModeSelector.enabled = streaming;
     self.touchModeSelector.alpha = streaming ? 1.0 : 0.4;
-    if (streaming && self.touchModeSelector.selectedSegmentIndex != (FoldSessionTouchscreen() ? 1 : 0)) {
-        self.touchModeSelector.selectedSegmentIndex = FoldSessionTouchscreen() ? 1 : 0;
-    }
     // The render scale only applies to Desktop; Virtual always matches this screen
     BOOL renderScaleApplies = !(streaming && isVirtual);
     if (self.resolutionSelector.enabled != renderScaleApplies) {
@@ -478,6 +485,10 @@ BOOL isCustomResolution(CGSize res) {
 
 - (void) viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    // Show the running session's touch mode. This must not happen on every
+    // layout pass: the segmented control re-lays out mid-tap, which used to
+    // snap the selection back before the change registered.
+    self.touchModeSelector.selectedSegmentIndex = FoldSessionTouchscreen() ? 1 : 0;
     [self updateDisconnectButton];
     [self updateResolutionDisplayViewText];
 }
@@ -492,6 +503,8 @@ BOOL isCustomResolution(CGSize res) {
 
 - (void) touchModeChanged {
     FoldSetSessionTouchscreen(self.touchModeSelector.selectedSegmentIndex == 1);
+    // Apply right away rather than when the panel closes
+    [[NSNotificationCenter defaultCenter] postNotificationName:kFoldTouchModeChangedNotification object:nil];
     // Disable on-screen controls in absolute touch mode
     // Fold build: the on-screen gamepad works with either touch mode
 }
@@ -762,6 +775,9 @@ BOOL isCustomResolution(CGSize res) {
     FoldSetRenderScaleIndex((int)[self chosenRenderScaleIndex]);
     if (_desktopScaleSelector != nil && _desktopScaleSelector.selectedSegmentIndex >= 0) {
         FoldSetVirtualDpi(kFoldVirtualDpis[_desktopScaleSelector.selectedSegmentIndex]);
+    }
+    if (_gamepadOpacitySelector != nil && _gamepadOpacitySelector.selectedSegmentIndex >= 0) {
+        FoldSetGamepadOpacity(kFoldGamepadOpacities[_gamepadOpacitySelector.selectedSegmentIndex]);
     }
     [dataMan saveSettingsWithBitrate:_bitrate
                            framerate:framerate

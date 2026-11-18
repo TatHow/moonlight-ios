@@ -480,6 +480,11 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
                                                  name:kFoldOpenSettingsNotification
                                                object:nil];
 
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(foldApplyTouchMode)
+                                                 name:kFoldTouchModeChangedNotification
+                                               object:nil];
+
 #if 0
     // FIXME: This doesn't work reliably on iPad for some reason. Showing and hiding the keyboard
     // several times in a row will not correctly restore the state of the UIScrollView.
@@ -835,6 +840,14 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     [self returnToMainFrame];
 }
 
+- (void)foldApplyTouchMode {
+    BOOL touchscreen = FoldSessionTouchscreen();
+    if (self.parentViewController != nil && touchscreen != _settings.absoluteTouchMode) {
+        _settings.absoluteTouchMode = touchscreen;
+        [_streamView foldSetTouchscreen:touchscreen];
+    }
+}
+
 // Apply settings changed while the stream was running
 - (void)foldSettingsClosed:(NSNotification*)note {
     if (self.parentViewController == nil) {
@@ -843,19 +856,12 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     TemporarySettings* fresh = [[[DataManager alloc] init] getSettings];
     
     [self foldRemoveSettingsShield];
-    BOOL touchscreen = FoldSessionTouchscreen();
-    if (touchscreen != _settings.absoluteTouchMode) {
-        _settings.absoluteTouchMode = touchscreen;
-        [_streamView foldSetTouchscreen:touchscreen];
-    }
+    [self foldApplyTouchMode];
     [_streamView foldSetOnScreenControls:(OnScreenControlsLevel)[fresh.onscreenControls integerValue]];
     
     int width = self.streamConfig.width, height = self.streamConfig.height;
-    int dpi = self.streamConfig.foldDpi;
-    if (self.streamConfig.foldVirtual) {
-        dpi = FoldVirtualDpi();
-    }
-    else {
+    int dpi = FoldVirtualDpi();
+    if (!self.streamConfig.foldVirtual) {
         CGSize size = FoldDesktopStreamSize();
         if (size.width > [self maxStreamDimension]) {
             size = kFoldRenderScaleSizes[1];
@@ -1531,8 +1537,8 @@ static CGRect FoldRectOutsideRail(CGRect r, CGRect rail) {
         return;
     }
     
-    // Wait for the size to settle (rotation or a fold in progress) before reconnecting
-    _resizeTimer = [NSTimer scheduledTimerWithTimeInterval:0.6
+    // Wait briefly for the size to settle (rotation or a fold in progress) before reconnecting
+    _resizeTimer = [NSTimer scheduledTimerWithTimeInterval:0.25
                                                     target:self
                                                   selector:@selector(resizeTimerFired:)
                                                   userInfo:nil
@@ -1561,7 +1567,7 @@ static CGRect FoldRectOutsideRail(CGRect r, CGRect rail) {
     [_statsUpdateTimer invalidate];
     _statsUpdateTimer = nil;
     
-    [self showStageText:[NSString stringWithFormat:@"Resizing to %d x %d...", width, height]];
+    // No message: the last frame stays up until the resized stream draws
     
     if (_stopInFlight) {
         self.streamConfig.width = width;

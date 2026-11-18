@@ -645,7 +645,8 @@ static NSMutableSet* hostList;
             }
             _streamConfig.width = (int)size.width;
             _streamConfig.height = (int)size.height;
-            Log(LOG_I, @"Desktop mode: streaming at %dx%d", _streamConfig.width, _streamConfig.height);
+            _streamConfig.foldDpi = FoldVirtualDpi();
+            Log(LOG_I, @"Desktop mode: streaming at %dx%d, %d%% scaling", _streamConfig.width, _streamConfig.height, _streamConfig.foldDpi);
         }
     }
 #endif

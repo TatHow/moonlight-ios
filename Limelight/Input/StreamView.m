@@ -654,12 +654,14 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 
 #if !TARGET_OS_TV
 - (void) foldSetOnScreenControls:(OnScreenControlsLevel)level {
+    ((UIView*)foldVirtualPad).alpha = FoldGamepadOpacity() / 100.0;
     if (level == foldOscLevel) {
         return;
     }
     foldOscLevel = level;
     if (level != OnScreenControlsLevelOff && foldVirtualPad == nil) {
         FoldGamepadView* pad = [[FoldGamepadView alloc] initWithFrame:self.bounds];
+        pad.alpha = FoldGamepadOpacity() / 100.0;
         foldVirtualPad = pad;
         [self addSubview:pad];
     }

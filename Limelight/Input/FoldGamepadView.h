@@ -65,6 +65,8 @@ static UIColor* FoldPadFill(BOOL pressed) {
     if (self) {
         self.backgroundColor = [UIColor clearColor];
         self.multipleTouchEnabled = YES;
+        // Stay above the video layers, which are added after us on each reconnect
+        self.layer.zPosition = 1000;
         self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _controls = [NSMutableArray array];
         _touches = [NSMutableDictionary dictionary];
@@ -163,7 +165,13 @@ static void FoldPadPlace(FoldPadControl* c, CGRect frame, CGFloat radius, CGFloa
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    CGRect r = UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets);
+    // Same margin on both sides: use the smaller of the side insets, so a
+    // cutout on one edge doesn't push that side's buttons inward
+    UIEdgeInsets insets = self.safeAreaInsets;
+    CGFloat side = MIN(insets.left, insets.right);
+    insets.left = side;
+    insets.right = side;
+    CGRect r = UIEdgeInsetsInsetRect(self.bounds, insets);
     r = CGRectInset(r, 12, 10);
     CGFloat s = MIN(1.35, MAX(0.7, MIN(r.size.width, r.size.height) / 420.0));
     CGFloat minX = CGRectGetMinX(r), maxX = CGRectGetMaxX(r);
@@ -318,11 +326,10 @@ static void FoldPadPlace(FoldPadControl* c, CGRect frame, CGFloat radius, CGFloa
         CGFloat dx = (p.x - center.x) / radius, dy = (center.y - p.y) / radius;
         CGFloat len = sqrt(dx * dx + dy * dy);
         if (len > 1) {
+            // The stick stays anchored where the touch began; past the
+            // edge it just stays at full tilt
             dx /= len;
             dy /= len;
-            // Drag the stick along so the finger never runs off it
-            CGPoint moved = CGPointMake(p.x - dx * radius, p.y + dy * radius);
-            [self placeStick:c center:moved diameter:c.view.frame.size.width];
         }
         c.stickValue = CGPointMake(dx, dy);
         c.pressed = YES;

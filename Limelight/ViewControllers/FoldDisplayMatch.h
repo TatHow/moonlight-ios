@@ -23,6 +23,7 @@ static NSString* const kFoldSettingsClosedNotification = @"FoldSettingsClosed";
 static NSString* const kFoldDisconnectNotification = @"FoldDisconnectRequested";
 // Posted by the on-screen gamepad's gear button
 static NSString* const kFoldOpenSettingsNotification = @"FoldOpenSettingsRequested";
+static NSString* const kFoldTouchModeChangedNotification = @"FoldTouchModeChanged";
 
 // Desktop render scale, relative to 3840x2160
 static const int kFoldRenderScaleCount = 4;
@@ -78,6 +79,30 @@ static inline BOOL FoldVirtualTouchscreen(void) {
 
 static inline void FoldSetVirtualTouchscreen(BOOL enabled) {
     [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kFoldVirtualTouchscreenKey];
+}
+
+// On-screen gamepad opacity (percent)
+static NSString* const kFoldGamepadOpacityKey = @"FoldGamepadOpacity";
+static const int kFoldGamepadOpacityCount = 4;
+static const int kFoldGamepadOpacities[] = { 25, 50, 75, 100 };
+
+static inline int FoldGamepadOpacity(void) {
+    NSInteger value = [[NSUserDefaults standardUserDefaults] integerForKey:kFoldGamepadOpacityKey];
+    return value >= 10 && value <= 100 ? (int)value : 100;
+}
+
+static inline void FoldSetGamepadOpacity(int percent) {
+    [[NSUserDefaults standardUserDefaults] setInteger:percent forKey:kFoldGamepadOpacityKey];
+}
+
+static inline int FoldGamepadOpacityIndex(void) {
+    int value = FoldGamepadOpacity();
+    for (int i = 0; i < kFoldGamepadOpacityCount; i++) {
+        if (kFoldGamepadOpacities[i] == value) {
+            return i;
+        }
+    }
+    return kFoldGamepadOpacityCount - 1;
 }
 
 // Touch mode of the running session: each connection starts on touchpad for
