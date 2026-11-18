@@ -5,10 +5,9 @@
 //  Fold build on-screen gamepad, a generic Xbox controller laid out like a handheld:
 //    top-left  LT, LS, LB         top-right  RT, RS, RB
 //    top-center  View  (gear)  Menu
-//    bottom-left  left stick + d-pad
-//    bottom-right right stick + A/B/X/Y diamond
-//  It sends controller 0 straight to the host. Touches that don't start on a
-//  control fall through to the stream underneath.
+//    bottom-left  d-pad          bottom-right  A/B/X/Y diamond
+//    sticks float: a touch anywhere else on the left/right half spawns one
+//  It sends controller 0 straight to the host and takes every touch while on.
 //  Header-only: include it from exactly one .m file (StreamView.m).
 //
 
@@ -49,6 +48,7 @@ typedef NS_ENUM(int, FoldPadKind) {
     NSMutableDictionary<NSValue*, FoldPadControl*>* _touches;
     FoldPadControl *_zl, *_zr, *_l, *_r, *_l3, *_r3, *_minus, *_plus, *_gear;
     FoldPadControl *_lstick, *_rstick, *_dpad, *_a, *_b, *_x, *_y;
+    CGFloat _stickDiameter;
     int _lastFlags;
     unsigned char _lastLt, _lastRt;
     short _lastLx, _lastLy, _lastRx, _lastRy;
@@ -130,6 +130,8 @@ static UIColor* FoldPadFill(BOOL pressed) {
     c.view.backgroundColor = [UIColor colorWithWhite:0.15 alpha:0.25];
     c.knob = [self styledView];
     c.knob.backgroundColor = [UIColor colorWithWhite:0.8 alpha:0.45];
+    c.view.hidden = YES;
+    c.knob.hidden = YES;
     [_controls addObject:c];
     return c;
 }
@@ -190,26 +192,12 @@ static void FoldPadPlace(FoldPadControl* c, CGRect frame, CGFloat radius, CGFloa
     FoldPadPlace(_gear, CGRectMake(midX - gd / 2, groupY, gd, gd), gd / 2, 20 * s, slop);
     FoldPadPlace(_plus, CGRectMake(midX + gd / 2 + gap, groupY + (gd - ph) / 2, pw, ph), ph / 2, 20 * s, slop);
 
-    // Bottom: left stick + d-pad on the left, right stick + ABXY on the right.
-    // Side by side when there is room, otherwise the d-pad and right stick
-    // sit above the left stick and ABXY.
-    CGFloat ls = 150 * s, rs = 118 * s, dp = 132 * s, ab = 150 * s;
-    BOOL wide = r.size.width >= ls + dp + rs + ab + 90 * s;
-    CGPoint lsC, dpC, rsC, abC;
-    if (wide) {
-        lsC = CGPointMake(minX + ls / 2, maxY - ls / 2);
-        dpC = CGPointMake(lsC.x + ls / 2 + 18 * s + dp / 2, maxY - dp / 2);
-        abC = CGPointMake(maxX - ab / 2, maxY - ab / 2);
-        rsC = CGPointMake(abC.x - ab / 2 - 18 * s - rs / 2, maxY - rs / 2);
-    }
-    else {
-        lsC = CGPointMake(minX + ls / 2, maxY - ls / 2);
-        dpC = CGPointMake(minX + ls / 2, lsC.y - ls / 2 - 16 * s - dp / 2);
-        abC = CGPointMake(maxX - ab / 2, maxY - ab / 2);
-        rsC = CGPointMake(maxX - ab / 2, abC.y - ab / 2 - 16 * s - rs / 2);
-    }
-    [self placeStick:_lstick center:lsC diameter:ls];
-    [self placeStick:_rstick center:rsC diameter:rs];
+    // Bottom corners: d-pad on the left, ABXY mirrored on the right.
+    // The sticks float: they appear wherever a touch starts on that half.
+    CGFloat dp = 140 * s, ab = 140 * s;
+    CGPoint dpC = CGPointMake(minX + dp / 2, maxY - dp / 2);
+    CGPoint abC = CGPointMake(maxX - ab / 2, maxY - ab / 2);
+    _stickDiameter = 130 * s;
 
     CGFloat db = dp * 0.36;
     NSArray<NSValue*>* offsets = @[[NSValue valueWithCGPoint:CGPointMake(0, -1)], [NSValue valueWithCGPoint:CGPointMake(0, 1)],
@@ -239,7 +227,6 @@ static void FoldPadPlace(FoldPadControl* c, CGRect frame, CGFloat radius, CGFloa
     c.knob.bounds = CGRectMake(0, 0, k, k);
     c.knob.layer.cornerRadius = k / 2;
     c.knob.center = CGPointMake(center.x + c.stickValue.x * d / 2, center.y - c.stickValue.y * d / 2);
-    c.hitRect = CGRectInset(c.view.frame, -d * 0.15, -d * 0.15);
 }
 
 #pragma mark - Touches
@@ -247,20 +234,23 @@ static void FoldPadPlace(FoldPadControl* c, CGRect frame, CGFloat radius, CGFloa
 - (FoldPadControl*)controlAt:(CGPoint)p {
     // Exact hits first, then the enlarged touch areas
     for (FoldPadControl* c in _controls) {
-        if (c.kind != FoldPadDpad && CGRectContainsPoint(c.view.frame, p)) {
+        if (c.kind != FoldPadDpad && c.kind != FoldPadStick && CGRectContainsPoint(c.view.frame, p)) {
             return c;
         }
     }
     for (FoldPadControl* c in _controls) {
-        if (CGRectContainsPoint(c.hitRect, p)) {
+        if (c.kind != FoldPadStick && CGRectContainsPoint(c.hitRect, p)) {
             return c;
         }
     }
-    return nil;
+    // Anywhere else: the floating stick for that half, if it isn't held already
+    FoldPadControl* stick = p.x < CGRectGetMidX(self.bounds) ? _lstick : _rstick;
+    return stick.pressed ? nil : stick;
 }
 
+// The gamepad takes the whole screen while it's on
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent*)event {
-    return !self.hidden && [self controlAt:point] != nil;
+    return !self.hidden;
 }
 
 - (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event {
@@ -277,8 +267,14 @@ static void FoldPadPlace(FoldPadControl* c, CGRect frame, CGFloat radius, CGFloa
             return;
         }
         _touches[[NSValue valueWithNonretainedObject:touch]] = c;
+        if (c.kind == FoldPadStick) {
+            c.stickValue = CGPointZero;
+            [self placeStick:c center:p diameter:_stickDiameter];
+        }
+        else {
+            pressedSomething = YES;
+        }
         [self touch:touch movedOn:c];
-        pressedSomething = YES;
     }
     if (pressedSomething) {
         [_haptic impactOccurred];
@@ -324,6 +320,9 @@ static void FoldPadPlace(FoldPadControl* c, CGRect frame, CGFloat radius, CGFloa
         if (len > 1) {
             dx /= len;
             dy /= len;
+            // Drag the stick along so the finger never runs off it
+            CGPoint moved = CGPointMake(p.x - dx * radius, p.y + dy * radius);
+            [self placeStick:c center:moved diameter:c.view.frame.size.width];
         }
         c.stickValue = CGPointMake(dx, dy);
         c.pressed = YES;
@@ -392,7 +391,9 @@ static void FoldPadPlace(FoldPadControl* c, CGRect frame, CGFloat radius, CGFloa
             CGRect f = c.view.frame;
             c.knob.center = CGPointMake(CGRectGetMidX(f) + c.stickValue.x * f.size.width / 2,
                                         CGRectGetMidY(f) - c.stickValue.y * f.size.height / 2);
-            c.knob.backgroundColor = [UIColor colorWithWhite:0.85 alpha:c.pressed ? 0.7 : 0.45];
+            c.knob.backgroundColor = [UIColor colorWithWhite:0.85 alpha:0.6];
+            c.view.hidden = !c.pressed;
+            c.knob.hidden = !c.pressed;
         }
     }
     short lx = (short)(_lstick.stickValue.x * 32767), ly = (short)(_lstick.stickValue.y * 32767);
