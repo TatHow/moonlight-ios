@@ -187,6 +187,36 @@
     return request;
 }
 
+- (NSInteger) sendClipboardText:(NSString*)text {
+    if (!_baseHTTPSURL || text == nil) {
+        return -1;
+    }
+    NSString* urlString = [NSString stringWithFormat:@"%@/actions/clipboard?uniqueid=%@&type=text", _baseHTTPSURL, _uniqueId];
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
+    request.HTTPMethod = @"POST";
+    request.HTTPBody = [text dataUsingEncoding:NSUTF8StringEncoding];
+    [request setValue:@"text/plain; charset=utf-8" forHTTPHeaderField:@"Content-Type"];
+    request.timeoutInterval = NORMAL_TIMEOUT_SEC;
+    
+    __block NSInteger status = -1;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    NSURLSession* urlSession = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration ephemeralSessionConfiguration] delegate:self delegateQueue:nil];
+    [[urlSession dataTaskWithRequest:request completionHandler:^(NSData * __nullable data, NSURLResponse * __nullable response, NSError * __nullable error) {
+        if (error != nil) {
+            Log(LOG_W, @"Clipboard send failed: %@", error);
+        }
+        else if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
+            status = ((NSHTTPURLResponse*)response).statusCode;
+        }
+        dispatch_semaphore_signal(done);
+    }] resume];
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    [urlSession invalidateAndCancel];
+    
+    Log(LOG_I, @"Clipboard send (%lu chars): HTTP %ld", (unsigned long)text.length, (long)status);
+    return status;
+}
+
 - (NSURLRequest*) newPairRequest:(NSData*)salt clientCert:(NSData*)clientCert {
     NSString* urlString = [NSString stringWithFormat:@"%@/pair?uniqueid=%@&devicename=%@&updateState=1&phrase=getservercert&salt=%@&clientcert=%@",
                            _baseHTTPURL, _uniqueId, _deviceName, [self bytesToHex:salt], [self bytesToHex:clientCert]];

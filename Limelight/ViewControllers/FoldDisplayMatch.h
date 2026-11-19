@@ -24,6 +24,8 @@ static NSString* const kFoldDisconnectNotification = @"FoldDisconnectRequested";
 // Posted by the on-screen gamepad's gear button
 static NSString* const kFoldOpenSettingsNotification = @"FoldOpenSettingsRequested";
 static NSString* const kFoldTouchModeChangedNotification = @"FoldTouchModeChanged";
+// Posted by the settings screen's clipboard button
+static NSString* const kFoldSendClipboardNotification = @"FoldSendClipboardRequested";
 
 // Desktop render scale, relative to 3840x2160
 static const int kFoldRenderScaleCount = 4;
@@ -103,6 +105,19 @@ static inline int FoldGamepadOpacityIndex(void) {
         }
     }
     return kFoldGamepadOpacityCount - 1;
+}
+
+// Send the iPhone clipboard to the PC whenever it has changed (on connect and
+// on coming back to the app). Off: only the clipboard button sends it.
+static NSString* const kFoldClipboardAutoKey = @"FoldClipboardAuto";
+
+static inline BOOL FoldClipboardAuto(void) {
+    NSNumber* value = [[NSUserDefaults standardUserDefaults] objectForKey:kFoldClipboardAutoKey];
+    return value == nil ? YES : [value boolValue];
+}
+
+static inline void FoldSetClipboardAuto(BOOL enabled) {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kFoldClipboardAutoKey];
 }
 
 // Touch mode of the running session: each connection starts on touchpad for
