@@ -22,6 +22,7 @@
     NSInteger _lastSelectedResolutionIndex;
     UISegmentedControl* _desktopScaleSelector;   // Windows display scaling
     UISegmentedControl* _gamepadOpacitySelector;
+    UISegmentedControl* _micSelector;            // send the iPhone/AirPods mic to the PC
     UIButton* _advancedButton;
     BOOL _showAdvanced;
     NSMapTable<UIView*, UILabel*>* _rowLabels;  // control -> its title label
@@ -327,6 +328,12 @@ BOOL isCustomResolution(CGSize res) {
     [self.scrollView addSubview:_gamepadOpacitySelector];
     [_rowLabels setObject:[self newRowLabel:@"Gamepad Opacity"] forKey:_gamepadOpacitySelector];
     
+    _micSelector = [self newSelectorWithItems:@[@"Off", @"On"]];
+    _micSelector.selectedSegmentIndex = FoldMicEnabled() ? 1 : 0;
+    [_micSelector addTarget:self action:@selector(micChanged) forControlEvents:UIControlEventValueChanged];
+    [self.scrollView addSubview:_micSelector];
+    [_rowLabels setObject:[self newRowLabel:@"Microphone to PC"] forKey:_micSelector];
+    
     UIColor* accent = [UIColor colorWithRed:0.62 green:0.58 blue:0.96 alpha:1.0];
     if (@available(iOS 13.0, *)) {
         if (self.touchModeSelector.selectedSegmentTintColor != nil) {
@@ -373,7 +380,7 @@ BOOL isCustomResolution(CGSize res) {
     _laidOutLeft = left;
     
     NSArray<UIView*>* mainRows = @[self.resolutionSelector, self.resolutionDisplayView, _desktopScaleSelector,
-                                   self.touchModeSelector, self.onscreenControlSelector, self.framerateSelector, self.bitrateSlider];
+                                   self.touchModeSelector, self.onscreenControlSelector, _micSelector, self.framerateSelector, self.bitrateSlider];
     NSArray<UIView*>* advancedRows = @[_gamepadOpacitySelector, self.codecSelector, self.hdrSelector, self.optimizeSettingsSelector, self.audioOnPCSelector,
                                        self.multiControllerSelector, self.swapABXYButtonsSelector, self.framePacingSelector,
                                        self.btMouseSelector, self.statsOverlaySelector];
@@ -499,6 +506,36 @@ BOOL isCustomResolution(CGSize res) {
 
 - (void) disconnectTapped {
     [[NSNotificationCenter defaultCenter] postNotificationName:kFoldDisconnectNotification object:nil];
+}
+
+// Applies right away, so it doubles as a mute while streaming
+- (void) micChanged {
+    BOOL on = _micSelector.selectedSegmentIndex == 1;
+    if (!on) {
+        FoldSetMicEnabled(NO);
+        [[NSNotificationCenter defaultCenter] postNotificationName:kFoldMicSettingChangedNotification object:nil];
+        return;
+    }
+    
+    [[AVAudioSession sharedInstance] requestRecordPermission:^(BOOL granted) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!granted) {
+                self->_micSelector.selectedSegmentIndex = 0;
+                FoldSetMicEnabled(NO);
+                UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Microphone Access"
+                                                                               message:@"Allow Moonlight to use the microphone in Settings to send it to your PC."
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"Settings" style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
+                    [[UIApplication sharedApplication] openURL:[NSURL URLWithString:UIApplicationOpenSettingsURLString] options:@{} completionHandler:nil];
+                }]];
+                [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+                [self presentViewController:alert animated:YES completion:nil];
+                return;
+            }
+            FoldSetMicEnabled(YES);
+            [[NSNotificationCenter defaultCenter] postNotificationName:kFoldMicSettingChangedNotification object:nil];
+        });
+    }];
 }
 
 - (void) touchModeChanged {

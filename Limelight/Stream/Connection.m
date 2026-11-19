@@ -16,6 +16,13 @@
 
 #include "Limelight.h"
 #include "opus_multistream.h"
+#import "MicStreamer.h"
+
+// Filled in by moonlight-common-c once the RTSP handshake is done; used to
+// send the microphone to the same host and audio port
+extern struct sockaddr_storage RemoteAddr;
+extern socklen_t AddrLen;
+extern uint16_t AudioPortNumber;
 
 @implementation Connection {
     SERVER_INFORMATION _serverInfo;
@@ -44,6 +51,7 @@ static void* audioBuffer;
 static int audioFrameSize;
 
 static VideoDecoderRenderer* renderer;
+static NSData* micKey;
 
 int DrDecoderSetup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags)
 {
@@ -254,14 +262,17 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
     // Start playback
     SDL_PauseAudioDevice(audioDevice, 0);
     
-    // Disable lowering volume of other audio streams (SDL sets AVAudioSessionCategoryOptionDuckOthers by default)
-    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
+    // Playback only, or play-and-record when the microphone is sent to the PC.
+    // Either way, don't lower the volume of other audio (SDL sets AVAudioSessionCategoryOptionDuckOthers by default)
+    [MicStreamer applyAudioSessionCategory];
     
     return 0;
 }
 
 void ArCleanup(void)
 {
+    [[MicStreamer shared] stop];
+    
     if (opusDecoder != NULL) {
         opus_multistream_decoder_destroy(opusDecoder);
         opusDecoder = NULL;
@@ -324,11 +335,15 @@ void ClStageFailed(int stage, int errorCode)
 
 void ClConnectionStarted(void)
 {
+    if (AudioPortNumber != 0 && micKey != nil) {
+        [[MicStreamer shared] startWithAddress:&RemoteAddr length:AddrLen port:AudioPortNumber key:micKey];
+    }
     [_callbacks connectionStarted];
 }
 
 void ClConnectionTerminated(int errorCode)
 {
+    [[MicStreamer shared] stop];
     [_callbacks connectionTerminated: errorCode];
 }
 
@@ -386,6 +401,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
         [initLock lock];
         LiStopConnection();
         [initLock unlock];
+        [[MicStreamer shared] stop];
     });
 }
 
@@ -397,6 +413,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
         [initLock lock];
         LiStopConnection();
         [initLock unlock];
+        [[MicStreamer shared] stop];
         if (completion != nil) {
             dispatch_async(dispatch_get_main_queue(), completion);
         }
@@ -474,6 +491,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     }
 
     memcpy(_streamConfig.remoteInputAesKey, [config.riKey bytes], [config.riKey length]);
+    micKey = [config.riKey copy];
     memset(_streamConfig.remoteInputAesIv, 0, 16);
     int riKeyId = htonl(config.riKeyId);
     memcpy(_streamConfig.remoteInputAesIv, &riKeyId, sizeof(riKeyId));
