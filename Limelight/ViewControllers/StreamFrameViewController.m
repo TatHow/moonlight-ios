@@ -913,6 +913,13 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         self->_streamActive = YES;
         self->_reconfiguring = NO;
         
+        // A new connection starts out OKAY and only reports changes, so a
+        // "slow connection" warning left over from the stream we just replaced
+        // (resize, settings change, reconnect) would never be cleared.
+        if (self->_statsUpdateTimer == nil) {
+            [self updateOverlayText:nil];
+        }
+        
         // Leave the spinner spinning until it's obscured by
         // the first frame of video.
         self->_stageLabel.hidden = YES;
@@ -1134,6 +1141,17 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     }
     
     dispatch_async(dispatch_get_main_queue(), ^{
+        // The stats overlay may have started while this was queued
+        if (self->_statsUpdateTimer != nil) {
+            return;
+        }
+        
+        // Drop a late warning from a connection that is being torn down or
+        // replaced: the next connection would never send OKAY to clear it.
+        if (status == CONN_STATUS_POOR && (!self->_streamActive || self->_reconfiguring)) {
+            return;
+        }
+        
         switch (status) {
             case CONN_STATUS_OKAY:
                 [self updateOverlayText:nil];
