@@ -58,6 +58,8 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Moonlight uses the local network to connect to your gaming PC for streaming.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Moonlight sends your microphone (or your AirPods' microphone) to your PC while streaming, when you turn on Microphone to PC.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

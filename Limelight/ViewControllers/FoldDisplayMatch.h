@@ -105,6 +105,20 @@ static inline int FoldGamepadOpacityIndex(void) {
     return kFoldGamepadOpacityCount - 1;
 }
 
+// Send this device's microphone (or connected AirPods/headset mic) to the PC.
+// Off by default: on Bluetooth headphones it switches them to call-quality audio.
+static NSString* const kFoldMicEnabledKey = @"FoldMicEnabled";
+// Posted by the settings screen when the mic toggle changes; observed by the stream
+static NSString* const kFoldMicSettingChangedNotification = @"FoldMicSettingChanged";
+
+static inline BOOL FoldMicEnabled(void) {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kFoldMicEnabledKey];
+}
+
+static inline void FoldSetMicEnabled(BOOL enabled) {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kFoldMicEnabledKey];
+}
+
 // Touch mode of the running session: each connection starts on touchpad for
 // Desktop and touchscreen for Virtual, and the settings toggle changes it
 static NSString* const kFoldSessionTouchscreenKey = @"FoldSessionTouchscreen";
