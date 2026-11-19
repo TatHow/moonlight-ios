@@ -22,6 +22,8 @@
     NSInteger _lastSelectedResolutionIndex;
     UISegmentedControl* _desktopScaleSelector;   // Windows display scaling
     UISegmentedControl* _gamepadOpacitySelector;
+    UISegmentedControl* _clipboardSelector;
+    UIButton* _clipboardButton;
     UIButton* _advancedButton;
     BOOL _showAdvanced;
     NSMapTable<UIView*, UILabel*>* _rowLabels;  // control -> its title label
@@ -327,6 +329,11 @@ BOOL isCustomResolution(CGSize res) {
     [self.scrollView addSubview:_gamepadOpacitySelector];
     [_rowLabels setObject:[self newRowLabel:@"Gamepad Opacity"] forKey:_gamepadOpacitySelector];
     
+    _clipboardSelector = [self newSelectorWithItems:@[@"Button Only", @"Automatic"]];
+    _clipboardSelector.selectedSegmentIndex = FoldClipboardAuto() ? 1 : 0;
+    [self.scrollView addSubview:_clipboardSelector];
+    [_rowLabels setObject:[self newRowLabel:@"Send iPhone Clipboard to PC"] forKey:_clipboardSelector];
+    
     UIColor* accent = [UIColor colorWithRed:0.62 green:0.58 blue:0.96 alpha:1.0];
     if (@available(iOS 13.0, *)) {
         if (self.touchModeSelector.selectedSegmentTintColor != nil) {
@@ -339,6 +346,16 @@ BOOL isCustomResolution(CGSize res) {
     [_disconnectButton addTarget:self action:@selector(disconnectTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.scrollView addSubview:_doneButton];
     [self.scrollView addSubview:_disconnectButton];
+    _clipboardButton = [self pillButton:@"" color:[UIColor colorWithWhite:0.35 alpha:1.0]];
+    if (@available(iOS 13.0, *)) {
+        [_clipboardButton setImage:[UIImage systemImageNamed:@"doc.on.clipboard"] forState:UIControlStateNormal];
+        _clipboardButton.tintColor = [UIColor whiteColor];
+    } else {
+        [_clipboardButton setTitle:@"Paste" forState:UIControlStateNormal];
+    }
+    _clipboardButton.accessibilityLabel = @"Send clipboard to PC";
+    [_clipboardButton addTarget:self action:@selector(clipboardTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.scrollView addSubview:_clipboardButton];
     
     _advancedButton = [UIButton buttonWithType:UIButtonTypeSystem];
     _advancedButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
@@ -374,7 +391,7 @@ BOOL isCustomResolution(CGSize res) {
     
     NSArray<UIView*>* mainRows = @[self.resolutionSelector, self.resolutionDisplayView, _desktopScaleSelector,
                                    self.touchModeSelector, self.onscreenControlSelector, self.framerateSelector, self.bitrateSlider];
-    NSArray<UIView*>* advancedRows = @[_gamepadOpacitySelector, self.codecSelector, self.hdrSelector, self.optimizeSettingsSelector, self.audioOnPCSelector,
+    NSArray<UIView*>* advancedRows = @[_gamepadOpacitySelector, _clipboardSelector, self.codecSelector, self.hdrSelector, self.optimizeSettingsSelector, self.audioOnPCSelector,
                                        self.multiControllerSelector, self.swapABXYButtonsSelector, self.framePacingSelector,
                                        self.btMouseSelector, self.statsOverlaySelector];
     
@@ -386,6 +403,8 @@ BOOL isCustomResolution(CGSize res) {
     _disconnectButton.frame = CGRectMake(left + 92 + 10, y, 124, 36);
     _doneButton.layer.cornerRadius = 18;
     _disconnectButton.layer.cornerRadius = 18;
+    _clipboardButton.frame = CGRectMake(left + 92 + 10 + 124 + 10, y, 52, 36);
+    _clipboardButton.layer.cornerRadius = 18;
     y += 36 + 14;
     
     void (^place)(UIView*) = ^(UIView* control) {
@@ -470,6 +489,7 @@ BOOL isCustomResolution(CGSize res) {
     BOOL isVirtual = NO;
     BOOL streaming = [self streamingVirtual:&isVirtual];
     _disconnectButton.hidden = !streaming;
+    _clipboardButton.hidden = !streaming;
     // Touch mode belongs to the running session (Desktop starts on touchpad,
     // Virtual on touchscreen), so it's only adjustable while streaming
     self.touchModeSelector.enabled = streaming;
@@ -499,6 +519,10 @@ BOOL isCustomResolution(CGSize res) {
 
 - (void) disconnectTapped {
     [[NSNotificationCenter defaultCenter] postNotificationName:kFoldDisconnectNotification object:nil];
+}
+
+- (void) clipboardTapped {
+    [[NSNotificationCenter defaultCenter] postNotificationName:kFoldSendClipboardNotification object:nil];
 }
 
 - (void) touchModeChanged {
@@ -778,6 +802,9 @@ BOOL isCustomResolution(CGSize res) {
     }
     if (_gamepadOpacitySelector != nil && _gamepadOpacitySelector.selectedSegmentIndex >= 0) {
         FoldSetGamepadOpacity(kFoldGamepadOpacities[_gamepadOpacitySelector.selectedSegmentIndex]);
+    }
+    if (_clipboardSelector != nil && _clipboardSelector.selectedSegmentIndex >= 0) {
+        FoldSetClipboardAuto(_clipboardSelector.selectedSegmentIndex == 1);
     }
     [dataMan saveSettingsWithBitrate:_bitrate
                            framerate:framerate

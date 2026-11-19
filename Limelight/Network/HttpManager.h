@@ -30,6 +30,9 @@
 - (NSURLRequest*) newQuitAppRequest;
 - (NSURLRequest*) newAppAssetRequestWithAppId:(NSString*)appId;
 - (void) executeRequestSynchronously:(HttpRequest*)request;
+// Apollo: puts text on the host PC's clipboard (POST /actions/clipboard).
+// Blocks; returns the HTTP status, or -1 if the request didn't complete.
+- (NSInteger) sendClipboardText:(NSString*)text;
 
 @end
 

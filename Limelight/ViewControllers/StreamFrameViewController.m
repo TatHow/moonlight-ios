@@ -12,6 +12,7 @@
 #import "StreamManager.h"
 #import "ControllerSupport.h"
 #import "DataManager.h"
+#import "HttpManager.h"
 #import "FoldDisplayMatch.h"
 #import "../Input/FoldKeyboard.h"
 
@@ -322,6 +323,12 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     BOOL _stopInFlight;
     BOOL _startWhenStopped;
 
+    // Clipboard sent to the PC: the pasteboard changeCount last read, so the
+    // same contents aren't read (and iOS doesn't ask to paste) again
+    NSInteger _clipboardChangeCount;
+    BOOL _clipboardSendInFlight;
+    UILabel *_toastLabel;
+
     // Foldable postures
     FoldLayout _foldLayout;
     CGRect _foldDivision;          // fold band in self.view coordinates (when folded)
@@ -483,6 +490,12 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(foldApplyTouchMode)
                                                  name:kFoldTouchModeChangedNotification
+                                               object:nil];
+
+    _clipboardChangeCount = -1;
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(foldSendClipboardRequested:)
+                                                 name:kFoldSendClipboardNotification
                                                object:nil];
 
 #if 0
@@ -682,6 +695,8 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
             Log(LOG_I, @"Back in the foreground, stream still connected");
             [self ensureFreshVideo];
             [self scheduleResolutionMatch];
+            // Something may have been copied in another app
+            [self sendClipboardToHost:NO];
         }
     }
     
@@ -932,7 +947,120 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         
         // The view may have changed size again while we were reconnecting
         [self scheduleResolutionMatch];
+        
+        [self sendClipboardToHost:NO];
     });
+}
+
+#pragma mark - Clipboard to PC
+
+- (void)foldSendClipboardRequested:(NSNotification*)note {
+#if !TARGET_OS_TV
+    [self foldCloseSettings];
+#endif
+    [self sendClipboardToHost:YES];
+}
+
+// Puts the iPhone's clipboard text on the PC's clipboard (Apollo's
+// /actions/clipboard). Automatic sends only happen when the clipboard changed
+// since the last one, so iOS asks to paste at most once per copy.
+- (void)sendClipboardToHost:(BOOL)userAsked {
+#if !TARGET_OS_TV
+    if (!_streamActive) {
+        if (userAsked) {
+            [self showToast:@"Not connected to the PC yet"];
+        }
+        return;
+    }
+    UIPasteboard* pasteboard = [UIPasteboard generalPasteboard];
+    NSInteger changeCount = pasteboard.changeCount;
+    if (!userAsked) {
+        if (!FoldClipboardAuto() || changeCount == _clipboardChangeCount) {
+            return;
+        }
+        // hasStrings doesn't trigger the paste prompt
+        if (!pasteboard.hasStrings) {
+            _clipboardChangeCount = changeCount;
+            return;
+        }
+    }
+    if (_clipboardSendInFlight) {
+        return;
+    }
+    // Reading may show iOS's "Allow Paste" prompt; nil if the user declined
+    NSString* text = pasteboard.string;
+    _clipboardChangeCount = changeCount;
+    if (text.length == 0) {
+        if (userAsked) {
+            [self showToast:@"No text on the clipboard"];
+        }
+        return;
+    }
+    
+    _clipboardSendInFlight = YES;
+    StreamConfiguration* config = self.streamConfig;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        HttpManager* hMan = [[HttpManager alloc] initWithAddress:config.host httpsPort:config.httpsPort serverCert:config.serverCert];
+        NSInteger status = [hMan sendClipboardText:text];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_clipboardSendInFlight = NO;
+            if (status == 200) {
+                [self showToast:@"Clipboard sent to PC"];
+            }
+            else if (status == 401) {
+                [self showToast:@"PC refused the clipboard: in Apollo's Clients page, allow \"Set clipboard\" for this iPhone"];
+            }
+            else if (status == 403) {
+                [self showToast:@"PC refused the clipboard: this iPhone isn't streaming from it"];
+            }
+            else if (status == 404) {
+                [self showToast:@"This host doesn't support receiving the clipboard (needs Apollo)"];
+            }
+            else {
+                [self showToast:status > 0 ? [NSString stringWithFormat:@"Couldn't send clipboard (error %ld)", (long)status]
+                                           : @"Couldn't send clipboard to PC"];
+                // Let the next automatic attempt try the same contents again
+                self->_clipboardChangeCount = -1;
+            }
+        });
+    });
+#endif
+}
+
+- (void)showToast:(NSString*)text {
+    if (_toastLabel == nil) {
+        _toastLabel = [[UILabel alloc] init];
+        _toastLabel.userInteractionEnabled = NO;
+        _toastLabel.textColor = [UIColor whiteColor];
+        _toastLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+        _toastLabel.textAlignment = NSTextAlignmentCenter;
+        _toastLabel.numberOfLines = 0;
+        _toastLabel.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.85];
+        _toastLabel.layer.cornerRadius = 14;
+        _toastLabel.clipsToBounds = YES;
+    }
+    [_toastLabel.layer removeAllAnimations];
+    _toastLabel.text = text;
+    CGRect area = _streamView.frame;
+    if (CGRectIsEmpty(area)) {
+        area = self.view.bounds;
+    }
+    CGFloat maxWidth = MIN(area.size.width - 40, 420);
+    CGSize size = [_toastLabel sizeThatFits:CGSizeMake(maxWidth - 28, CGFLOAT_MAX)];
+    CGFloat width = MIN(size.width + 28, maxWidth);
+    CGFloat height = size.height + 16;
+    _toastLabel.frame = CGRectMake(CGRectGetMidX(area) - width / 2, area.origin.y + MAX(self.view.safeAreaInsets.top, 12) + 12, width, height);
+    [self.view addSubview:_toastLabel];
+    [self.view bringSubviewToFront:_toastLabel];
+    _toastLabel.alpha = 1;
+    UILabel* label = _toastLabel;
+    [UIView animateWithDuration:0.4 delay:(text.length > 40 ? 4.0 : 1.6) options:UIViewAnimationOptionBeginFromCurrentState animations:^{
+        label.alpha = 0;
+    } completion:^(BOOL finished) {
+        if (finished) {
+            [label removeFromSuperview];
+        }
+    }];
 }
 
 - (void)connectionTerminated:(int)errorCode {
@@ -1318,6 +1446,7 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
         [self railButtonWithSymbol:@"escape" title:@"Esc" action:@selector(railEscape)],
         [self railButtonWithSymbol:nil title:@"Win" action:@selector(railWindows)],
         [self railButtonWithSymbol:@"rectangle.split.1x2" title:@"▤" action:@selector(railTogglePanel)],
+        [self railButtonWithSymbol:@"doc.on.clipboard" title:@"📋" action:@selector(railClipboard)],
         [self railButtonWithSymbol:@"xmark" title:@"✕" action:@selector(railExit)],
     ];
     // Laid out by hand (see layoutFoldRail:) rather than with a stack view
@@ -1356,6 +1485,10 @@ typedef NS_ENUM(NSInteger, FoldLayout) {
     _foldPanelForced = !_foldPanelForced;
     _foldFullScreenOverride = NO;
     [self.view setNeedsLayout];
+}
+
+- (void)railClipboard {
+    [self sendClipboardToHost:YES];
 }
 
 - (void)railExit {
